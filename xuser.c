@@ -114,8 +114,42 @@ static HRESULT WINAPI user_add_provider( XAsyncOp op, const XAsyncProviderData *
 struct token_request
 {
     char *body;
-    char *token;
+    char *token;            /* bridge answer; split into token and signature */
+    const char *signature;
 };
+
+static char *base64_encode( const UINT8 *data, SIZE_T size )
+{
+    static const char table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    char *out, *p;
+    SIZE_T i;
+
+    if (!(out = p = malloc( (size + 2) / 3 * 4 + 1 ))) return NULL;
+    for (i = 0; i + 2 < size; i += 3)
+    {
+        *p++ = table[data[i] >> 2];
+        *p++ = table[((data[i] & 3) << 4) | (data[i + 1] >> 4)];
+        *p++ = table[((data[i + 1] & 15) << 2) | (data[i + 2] >> 6)];
+        *p++ = table[data[i + 2] & 63];
+    }
+    if (i < size)
+    {
+        *p++ = table[data[i] >> 2];
+        if (i + 1 < size)
+        {
+            *p++ = table[((data[i] & 3) << 4) | (data[i + 1] >> 4)];
+            *p++ = table[(data[i + 1] & 15) << 2];
+        }
+        else
+        {
+            *p++ = table[(data[i] & 3) << 4];
+            *p++ = '=';
+        }
+        *p++ = '=';
+    }
+    *p = 0;
+    return out;
+}
 
 static HRESULT WINAPI token_provider( XAsyncOp op, const XAsyncProviderData *data )
 {
@@ -131,24 +165,39 @@ static HRESULT WINAPI token_provider( XAsyncOp op, const XAsyncProviderData *dat
         case XAsyncOp_DoWork:
         {
             HRESULT hr = gdkc_bridge_post( L"/xbl/token", request->body, &request->token );
+            char *newline;
 
             if (FAILED(hr)) WARN( "token request failed, hr %#lx.\n", hr );
+            else
+            {
+                /* The answer is the token, a line break and the signature (both may be empty). */
+                request->signature = "";
+                if ((newline = strchr( request->token, '\n' )))
+                {
+                    *newline = 0;
+                    request->signature = newline + 1;
+                }
+            }
             IXThreadingImpl_XAsyncComplete( x_threading_impl, data->async, hr,
-                                            SUCCEEDED(hr) ? sizeof(*result) + strlen( request->token ) + 2 : 0 );
+                                            SUCCEEDED(hr) ? sizeof(*result) + strlen( request->token ) + strlen( request->signature ) + 2 : 0 );
             return S_OK;
         }
 
         case XAsyncOp_GetResult:
+        {
+            SIZE_T signature_size = strlen( request->signature ) + 1;
+
             token_size = strlen( request->token ) + 1;
-            if (data->bufferSize < sizeof(*result) + token_size + 1) return HRESULT_FROM_WIN32( ERROR_INSUFFICIENT_BUFFER );
+            if (data->bufferSize < sizeof(*result) + token_size + signature_size) return HRESULT_FROM_WIN32( ERROR_INSUFFICIENT_BUFFER );
             result = data->buffer;
             result->token = (char *)(result + 1);
             memcpy( (char *)result->token, request->token, token_size );
             result->tokenSize = token_size - 1;
             result->signature = result->token + token_size;
-            *(char *)result->signature = 0;
-            result->signatureSize = 0;
+            memcpy( (char *)result->signature, request->signature, signature_size );
+            result->signatureSize = signature_size - 1;
             return S_OK;
+        }
 
         case XAsyncOp_Cleanup:
             free( request->body );
@@ -381,6 +430,7 @@ static HRESULT WINAPI x_user_XUserResolvePrivilegeWithUiResult( IXUserImpl6 *ifa
 static HRESULT WINAPI x_user_XUserGetTokenAndSignatureAsync( IXUserImpl6 *iface, XUserHandle user, XUserGetTokenAndSignatureOptions options, const char *method, const char *url, SIZE_T headerCount, const XUserGetTokenAndSignatureHttpHeader *headers, SIZE_T bodySize, const void *bodyBuffer, XAsyncBlock *async )
 {
     struct token_request *request;
+    char msa_app_id[64] = "", *body64;
     UINT32 title_id;
     SIZE_T len;
     HRESULT hr;
@@ -394,13 +444,23 @@ static HRESULT WINAPI x_user_XUserGetTokenAndSignatureAsync( IXUserImpl6 *iface,
 
     if (!(request = calloc( 1, sizeof(*request) ))) return E_OUTOFMEMORY;
     if (!gdkc_config_get_title_id( &title_id )) title_id = 0;
-    len = strlen( method ) + strlen( url ) + 16;
-    if (!(request->body = malloc( len )))
+    gdkc_config_get_msa_app_id( msa_app_id, sizeof(msa_app_id) );
+    if (strpbrk( msa_app_id, "\r\n" )) msa_app_id[0] = 0;
+    /* The body is only needed to sign the request. */
+    if (!(body64 = base64_encode( bodySize ? bodyBuffer : NULL, bodyBuffer ? bodySize : 0 )))
     {
         free( request );
         return E_OUTOFMEMORY;
     }
-    sprintf( request->body, "%s\n%s\n%d\n%u", method, url, (options & XUserGetTokenAndSignatureOptions_ForceRefresh) ? 1 : 0, title_id );
+    len = strlen( method ) + strlen( url ) + strlen( msa_app_id ) + strlen( body64 ) + 32;
+    if (!(request->body = malloc( len )))
+    {
+        free( body64 );
+        free( request );
+        return E_OUTOFMEMORY;
+    }
+    sprintf( request->body, "%s\n%s\n%d\n%u\n%s\n%s", method, url, (options & XUserGetTokenAndSignatureOptions_ForceRefresh) ? 1 : 0, title_id, msa_app_id, body64 );
+    free( body64 );
 
     if (FAILED(hr = IXThreadingImpl_XAsyncBegin( x_threading_impl, async, request, x_user_XUserGetTokenAndSignatureAsync, "XUserGetTokenAndSignatureAsync", token_provider )))
     {

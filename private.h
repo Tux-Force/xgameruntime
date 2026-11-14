@@ -96,6 +96,7 @@ BOOL gdkc_config_get_title_id( UINT32 *title_id );
 BOOL gdkc_config_get_package_full_name( char *out, SIZE_T size );
 BOOL gdkc_config_get_package_family_name( char *out, SIZE_T size );
 BOOL gdkc_config_get_store_id( char *out, SIZE_T size );
+BOOL gdkc_config_get_msa_app_id( char *out, SIZE_T size );
 HRESULT gdkc_get_storage_path( char *out, SIZE_T size, SIZE_T *used );
 void *gdkc_async_context( XAsyncBlock *asyncBlock );
 BOOL gdkc_bridge_available(void);

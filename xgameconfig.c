@@ -197,3 +197,9 @@ BOOL gdkc_config_get_store_id( char *out, SIZE_T size )
 {
     return config_get_tag( "StoreId", out, size );
 }
+
+/* The MSA app id identifies the game to Xbox Live sign-in (title-bound tokens). */
+BOOL gdkc_config_get_msa_app_id( char *out, SIZE_T size )
+{
+    return config_get_tag( "MSAAppId", out, size );
+}
