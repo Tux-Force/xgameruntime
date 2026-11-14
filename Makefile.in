@@ -1,5 +1,5 @@
 MODULE    = xgameruntime.dll
-IMPORTS   = combase bcrypt
+IMPORTS   = combase bcrypt winhttp
 
 SOURCES = \
 	main.c \
@@ -43,5 +43,6 @@ SOURCES = \
 	xsystem.idl \
 	xsystemanalytics.c \
 	xthreading.c \
+	xodusbridge.c \
 	xuser.c \
 	xuser.idl

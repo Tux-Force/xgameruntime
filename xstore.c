@@ -122,16 +122,63 @@ static HRESULT WINAPI x_store_XStoreQueryProductsResult( IXStoreImpl6 *iface, XA
     return E_NOTIMPL;
 }
 
+/*
+ * Product queries. Querying the user's collection is not implemented yet, so entitled product
+ * queries succeed with an empty result: the game sees no add-ons instead of an error.
+ */
+#define PRODUCT_QUERY_MAGIC 0x51505358 /* XSPQ */
+
+struct product_query
+{
+    DWORD magic;
+};
+
+static struct product_query *product_query_from_handle( XStoreProductQueryHandle handle )
+{
+    struct product_query *query = handle;
+    return query && query->magic == PRODUCT_QUERY_MAGIC ? query : NULL;
+}
+
+static HRESULT WINAPI empty_product_query_provider( XAsyncOp op, const XAsyncProviderData *data )
+{
+    struct product_query *query;
+
+    switch (op)
+    {
+        case XAsyncOp_Begin:
+            return IXThreadingImpl_XAsyncSchedule( x_threading_impl, data->async, 0 );
+
+        case XAsyncOp_DoWork:
+            IXThreadingImpl_XAsyncComplete( x_threading_impl, data->async, S_OK, sizeof(XStoreProductQueryHandle) );
+            return S_OK;
+
+        case XAsyncOp_GetResult:
+            if (data->bufferSize < sizeof(XStoreProductQueryHandle)) return HRESULT_FROM_WIN32( ERROR_INSUFFICIENT_BUFFER );
+            if (!(query = calloc( 1, sizeof(*query) ))) return E_OUTOFMEMORY;
+            query->magic = PRODUCT_QUERY_MAGIC;
+            *(XStoreProductQueryHandle *)data->buffer = query;
+            return S_OK;
+
+        default:
+            return S_OK;
+    }
+}
+
 static HRESULT WINAPI x_store_XStoreQueryEntitledProductsAsync( IXStoreImpl6 *iface, const XStoreContextHandle storeContextHandle, XStoreProductKind productKinds, UINT32 maxItemsToRetrievePerPage, XAsyncBlock *async )
 {
-    FIXME( "iface %p, storeContextHandle %p, productKinds %#x, maxItemsToRetrievePerPage, %u, async %p stub!\n", iface, storeContextHandle, productKinds, maxItemsToRetrievePerPage, async );
-    return E_NOTIMPL;
+    TRACE( "iface %p, storeContextHandle %p, productKinds %#x, maxItemsToRetrievePerPage %u, async %p.\n", iface, storeContextHandle, productKinds, maxItemsToRetrievePerPage, async );
+
+    if (!storeContextHandle || !async) return E_INVALIDARG;
+    FIXME( "returning an empty list of entitled products.\n" );
+    return IXThreadingImpl_XAsyncBegin( x_threading_impl, async, NULL, x_store_XStoreQueryEntitledProductsAsync, "XStoreQueryEntitledProductsAsync", empty_product_query_provider );
 }
 
 static HRESULT WINAPI x_store_XStoreQueryEntitledProductsResult( IXStoreImpl6 *iface, XAsyncBlock *async, XStoreProductQueryHandle *productQueryHandle )
 {
-    FIXME( "iface %p, async %p, productQueryHandle %p stub!\n", iface, async, productQueryHandle );
-    return E_NOTIMPL;
+    TRACE( "iface %p, async %p, productQueryHandle %p.\n", iface, async, productQueryHandle );
+
+    if (!productQueryHandle) return E_INVALIDARG;
+    return IXThreadingImpl_XAsyncGetResult( x_threading_impl, async, x_store_XStoreQueryEntitledProductsAsync, sizeof(*productQueryHandle), productQueryHandle, NULL );
 }
 
 static HRESULT WINAPI x_store_XStoreQueryProductForCurrentGameAsync( IXStoreImpl6 *iface, const XStoreContextHandle storeContextHandle, XAsyncBlock *async )
@@ -160,13 +207,16 @@ static HRESULT WINAPI x_store_XStoreQueryProductForPackageResult( IXStoreImpl6 *
 
 static HRESULT WINAPI x_store_XStoreEnumerateProductsQuery( IXStoreImpl6 *iface, const XStoreProductQueryHandle productQueryHandle, void *context, XStoreProductQueryCallback *callback )
 {
-    FIXME( "iface %p, productQueryHandle %p, context %p, callback %p stub!\n", iface, productQueryHandle, context, callback );
-    return E_NOTIMPL;
+    TRACE( "iface %p, productQueryHandle %p, context %p, callback %p.\n", iface, productQueryHandle, context, callback );
+
+    if (!product_query_from_handle( productQueryHandle ) || !callback) return E_INVALIDARG;
+    /* Queries are always empty for now. */
+    return S_OK;
 }
 
 static BOOLEAN WINAPI x_store_XStoreProductsQueryHasMorePages( IXStoreImpl6 *iface, const XStoreProductQueryHandle productQueryHandle )
 {
-    FIXME( "iface %p, productQueryHandle %p stub!\n", iface, productQueryHandle );
+    TRACE( "iface %p, productQueryHandle %p.\n", iface, productQueryHandle );
     return FALSE;
 }
 
@@ -184,7 +234,13 @@ static HRESULT WINAPI x_store_XStoreProductsQueryNextPageResult( IXStoreImpl6 *i
 
 static void WINAPI x_store_XStoreCloseProductsQueryHandle( IXStoreImpl6 *iface, XStoreProductQueryHandle productQueryHandle )
 {
-    FIXME( "iface %p, productQueryHandle %p stub!\n", iface, productQueryHandle );
+    struct product_query *query = product_query_from_handle( productQueryHandle );
+
+    TRACE( "iface %p, productQueryHandle %p.\n", iface, productQueryHandle );
+
+    if (!query) return;
+    query->magic = 0;
+    free( query );
 }
 
 static HRESULT WINAPI x_store_XStoreAcquireLicenseForPackageAsync( IXStoreImpl6 *iface, const XStoreProductQueryHandle productQueryHandle, const char *packageIdentifier, XAsyncBlock *async )
@@ -365,22 +421,114 @@ static HRESULT WINAPI x_store_XStoreGetUserPurchaseIdResult( IXStoreImpl6 *iface
     return E_NOTIMPL;
 }
 
+/*
+ * License tokens are issued by the Microsoft Store licensing service for the signed in user.
+ * The request is forwarded to Xodus through its bridge, which holds the account tokens.
+ */
+struct license_token_request
+{
+    char *body;
+    char *token;
+};
+
+static HRESULT WINAPI license_token_provider( XAsyncOp op, const XAsyncProviderData *data )
+{
+    struct license_token_request *request = data->context;
+    HRESULT hr;
+
+    switch (op)
+    {
+        case XAsyncOp_Begin:
+            return IXThreadingImpl_XAsyncSchedule( x_threading_impl, data->async, 0 );
+
+        case XAsyncOp_DoWork:
+            hr = gdkc_bridge_post( L"/store/license-token", request->body, &request->token );
+            if (FAILED(hr)) WARN( "license token request failed, hr %#lx.\n", hr );
+            IXThreadingImpl_XAsyncComplete( x_threading_impl, data->async, hr,
+                                            SUCCEEDED(hr) ? strlen( request->token ) + 1 : 0 );
+            return S_OK;
+
+        case XAsyncOp_GetResult:
+            if (data->bufferSize < strlen( request->token ) + 1) return HRESULT_FROM_WIN32( ERROR_INSUFFICIENT_BUFFER );
+            strcpy( data->buffer, request->token );
+            return S_OK;
+
+        case XAsyncOp_Cleanup:
+            free( request->body );
+            free( request->token );
+            free( request );
+            return S_OK;
+
+        default:
+            return S_OK;
+    }
+}
+
+/* Builds the bridge request: parent product id, hex encoded custom string, then the product ids. */
+static char *build_license_token_body( const char **ids, SIZE_T count, const char *custom )
+{
+    char parent[64] = "", *body, *p;
+    SIZE_T len, i;
+
+    if (!custom) custom = "";
+    gdkc_config_get_store_id( parent, sizeof(parent) );
+
+    len = strlen( parent ) + 1 + strlen( custom ) * 2 + 1 + 1;
+    for (i = 0; i < count; i++) len += strlen( ids[i] ) + 1;
+    if (!(body = malloc( len ))) return NULL;
+
+    p = body + sprintf( body, "%s\n", parent );
+    for (i = 0; custom[i]; i++) p += sprintf( p, "%02x", (unsigned char)custom[i] );
+    *p++ = '\n';
+    for (i = 0; i < count; i++)
+    {
+        /* Product ids never contain line breaks; drop any that would break the format. */
+        if (strpbrk( ids[i], "\r\n" )) continue;
+        p += sprintf( p, "%s\n", ids[i] );
+    }
+    *p = 0;
+    return body;
+}
+
 static HRESULT WINAPI x_store_XStoreQueryLicenseTokenAsync( IXStoreImpl6 *iface, const XStoreContextHandle storeContextHandle, const char **productIds, SIZE_T productIdsCount, const char *customDeveloperString, XAsyncBlock *async )
 {
-    FIXME( "iface %p, storeContextHandle %p, productIdsCount %p, idsCount %Iu, custom %s, async %p stub!\n", iface, storeContextHandle, productIds, productIdsCount, debugstr_a( customDeveloperString ), async );
-    return E_NOTIMPL;
+    struct license_token_request *request;
+    HRESULT hr;
+    SIZE_T i;
+
+    TRACE( "iface %p, storeContextHandle %p, productIds %p, productIdsCount %Iu, custom %s, async %p.\n", iface, storeContextHandle, productIds, productIdsCount, debugstr_a( customDeveloperString ), async );
+
+    if (!storeContextHandle || !async || (productIdsCount && !productIds)) return E_INVALIDARG;
+    for (i = 0; i < productIdsCount; i++) if (!productIds[i]) return E_INVALIDARG;
+    if (!gdkc_bridge_available()) return E_NOTIMPL;
+
+    if (!(request = calloc( 1, sizeof(*request) ))) return E_OUTOFMEMORY;
+    if (!(request->body = build_license_token_body( productIds, productIdsCount, customDeveloperString )))
+    {
+        free( request );
+        return E_OUTOFMEMORY;
+    }
+
+    if (FAILED(hr = IXThreadingImpl_XAsyncBegin( x_threading_impl, async, request, x_store_XStoreQueryLicenseTokenAsync, "XStoreQueryLicenseTokenAsync", license_token_provider )))
+    {
+        free( request->body );
+        free( request );
+    }
+    return hr;
 }
 
 static HRESULT WINAPI x_store_XStoreQueryLicenseTokenResultSize( IXStoreImpl6 *iface, XAsyncBlock *async, SIZE_T *size )
 {
-    FIXME( "iface %p, async %p, size %p stub!\n", iface, async, size );
-    return E_NOTIMPL;
+    TRACE( "iface %p, async %p, size %p.\n", iface, async, size );
+    return IXThreadingImpl_XAsyncGetResultSize( x_threading_impl, async, size );
 }
 
 static HRESULT WINAPI x_store_XStoreQueryLicenseTokenResult( IXStoreImpl6 *iface, XAsyncBlock *async, SIZE_T size, char *result )
 {
-    FIXME( "iface %p, async %p, size %Iu, result %p stub!\n", iface, async, size, result );
-    return E_NOTIMPL;
+    TRACE( "iface %p, async %p, size %Iu, result %p.\n", iface, async, size, result );
+
+    if (!result) return E_INVALIDARG;
+    return IXThreadingImpl_XAsyncGetResult( x_threading_impl, async, x_store_XStoreQueryLicenseTokenAsync, size, result, NULL );
 }
 
 static HRESULT WINAPI __PADDING__( IXStoreImpl6 *iface )
@@ -437,22 +585,45 @@ static HRESULT WINAPI x_store_XStoreShowRedeemTokenUIResult( IXStoreImpl6 *iface
     return E_NOTIMPL;
 }
 
+/* Updates are managed by Xodus or the Windows Xbox app, never from inside the game. */
+static HRESULT WINAPI no_updates_provider( XAsyncOp op, const XAsyncProviderData *data )
+{
+    switch (op)
+    {
+        case XAsyncOp_Begin:
+            return IXThreadingImpl_XAsyncSchedule( x_threading_impl, data->async, 0 );
+        case XAsyncOp_DoWork:
+            IXThreadingImpl_XAsyncComplete( x_threading_impl, data->async, S_OK, 0 );
+            return S_OK;
+        default:
+            return S_OK;
+    }
+}
+
 static HRESULT WINAPI x_store_XStoreQueryGameAndDlcPackageUpdatesAsync( IXStoreImpl6 *iface, const XStoreContextHandle storeContextHandle, XAsyncBlock *async )
 {
-    FIXME( "iface %p, storeContextHandle %p, async %p stub!\n", iface, storeContextHandle, async );
-    return E_NOTIMPL;
+    TRACE( "iface %p, storeContextHandle %p, async %p.\n", iface, storeContextHandle, async );
+
+    if (!storeContextHandle || !async) return E_INVALIDARG;
+    return IXThreadingImpl_XAsyncBegin( x_threading_impl, async, NULL, x_store_XStoreQueryGameAndDlcPackageUpdatesAsync, "XStoreQueryGameAndDlcPackageUpdatesAsync", no_updates_provider );
 }
 
 static HRESULT WINAPI x_store_XStoreQueryGameAndDlcPackageUpdatesResultCount( IXStoreImpl6 *iface, XAsyncBlock *async, UINT32 *count )
 {
-    FIXME( "iface %p, async %p, count %p stub!\n", iface, async, count );
-    return E_NOTIMPL;
+    HRESULT hr;
+
+    TRACE( "iface %p, async %p, count %p.\n", iface, async, count );
+
+    if (!count) return E_INVALIDARG;
+    if (FAILED(hr = IXThreadingImpl_XAsyncGetStatus( x_threading_impl, async, FALSE ))) return hr;
+    *count = 0;
+    return S_OK;
 }
 
 static HRESULT WINAPI x_store_XStoreQueryGameAndDlcPackageUpdatesResult( IXStoreImpl6 *iface, XAsyncBlock *async, UINT32 count, XStorePackageUpdate *packageUpdates )
 {
-    FIXME( "iface %p, async %p, count %u, packageUpdates %p stub!\n", iface, async, count, packageUpdates );
-    return E_NOTIMPL;
+    TRACE( "iface %p, async %p, count %u, packageUpdates %p.\n", iface, async, count, packageUpdates );
+    return IXThreadingImpl_XAsyncGetResult( x_threading_impl, async, x_store_XStoreQueryGameAndDlcPackageUpdatesAsync, 0, NULL, NULL );
 }
 
 static HRESULT WINAPI x_store_XStoreDownloadPackageUpdatesAsync( IXStoreImpl6 *iface, XStoreContextHandle storeContextHandle, const char **packageIdentifiers, SIZE_T packageIdentifiersCount, XAsyncBlock *async )

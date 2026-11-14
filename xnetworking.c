@@ -23,6 +23,9 @@
 
 #include "wine/list.h"
 
+/* The port Xbox titles use by default. */
+#define PREFERRED_UDP_PORT 3074
+
 WINE_DEFAULT_DEBUG_CHANNEL(gdkc);
 
 struct x_networking
@@ -73,20 +76,45 @@ static ULONG WINAPI x_networking_Release( IXNetworkingImpl2 *iface )
 
 static HRESULT WINAPI x_networking_XNetworkingQueryPreferredLocalUdpMultiplayerPort( IXNetworkingImpl2 *iface, UINT16 *preferredLocalUdpMultiplayerPort )
 {
-    FIXME( "iface %p, preferredLocalUdpMultiplayerPort %p stub!\n", iface, preferredLocalUdpMultiplayerPort );
-    return E_NOTIMPL;
+    TRACE( "iface %p, preferredLocalUdpMultiplayerPort %p.\n", iface, preferredLocalUdpMultiplayerPort );
+
+    if (!preferredLocalUdpMultiplayerPort) return E_INVALIDARG;
+    *preferredLocalUdpMultiplayerPort = PREFERRED_UDP_PORT;
+    return S_OK;
+}
+
+static HRESULT WINAPI udp_port_provider( XAsyncOp op, const XAsyncProviderData *data )
+{
+    switch (op)
+    {
+        case XAsyncOp_Begin:
+            return IXThreadingImpl_XAsyncSchedule( x_threading_impl, data->async, 0 );
+        case XAsyncOp_DoWork:
+            IXThreadingImpl_XAsyncComplete( x_threading_impl, data->async, S_OK, sizeof(UINT16) );
+            return S_OK;
+        case XAsyncOp_GetResult:
+            if (data->bufferSize < sizeof(UINT16)) return HRESULT_FROM_WIN32( ERROR_INSUFFICIENT_BUFFER );
+            *(UINT16 *)data->buffer = PREFERRED_UDP_PORT;
+            return S_OK;
+        default:
+            return S_OK;
+    }
 }
 
 static HRESULT WINAPI x_networking_XNetworkingQueryPreferredLocalUdpMultiplayerPortAsync( IXNetworkingImpl2 *iface, XAsyncBlock *asyncBlock )
 {
-    FIXME( "iface %p, asyncBlock %p stub!\n", iface, asyncBlock );
-    return E_NOTIMPL;
+    TRACE( "iface %p, asyncBlock %p.\n", iface, asyncBlock );
+
+    if (!asyncBlock) return E_INVALIDARG;
+    return IXThreadingImpl_XAsyncBegin( x_threading_impl, asyncBlock, NULL, x_networking_XNetworkingQueryPreferredLocalUdpMultiplayerPortAsync, "XNetworkingQueryPreferredLocalUdpMultiplayerPortAsync", udp_port_provider );
 }
 
 static HRESULT WINAPI x_networking_XNetworkingQueryPreferredLocalUdpMultiplayerPortAsyncResult( IXNetworkingImpl2 *iface, XAsyncBlock *asyncBlock, UINT16 *preferredLocalUdpMultiplayerPort )
 {
-    FIXME( "iface %p, asyncBlock %p, preferredLocalUdpMultiplayerPort %p stub!\n", iface, asyncBlock, preferredLocalUdpMultiplayerPort );
-    return E_NOTIMPL;
+    TRACE( "iface %p, asyncBlock %p, preferredLocalUdpMultiplayerPort %p.\n", iface, asyncBlock, preferredLocalUdpMultiplayerPort );
+
+    if (!preferredLocalUdpMultiplayerPort) return E_INVALIDARG;
+    return IXThreadingImpl_XAsyncGetResult( x_threading_impl, asyncBlock, x_networking_XNetworkingQueryPreferredLocalUdpMultiplayerPortAsync, sizeof(*preferredLocalUdpMultiplayerPort), preferredLocalUdpMultiplayerPort, NULL );
 }
 
 static HRESULT WINAPI x_networking_XNetworkingRegisterPreferredLocalUdpMultiplayerPortChanged( IXNetworkingImpl2 *iface, XTaskQueueHandle queue, void *context, XNetworkingPreferredLocalUdpMultiplayerPortChangedCallback *callback, XTaskQueueRegistrationToken *token )
