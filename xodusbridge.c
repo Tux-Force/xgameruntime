@@ -77,7 +77,8 @@ HRESULT gdkc_bridge_post( const WCHAR *path, const char *body, char **response )
     }
     buffer[total] = 0;
 
-    if (status == 200)
+    /* 204 means the request needs no answer, e.g. a URL without an Xbox Live token. */
+    if (status == 200 || status == 204)
     {
         *response = buffer;
         buffer = NULL;

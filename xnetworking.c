@@ -21,6 +21,7 @@
 
 #include "private.h"
 
+#include "winhttp.h"
 #include "wine/list.h"
 
 /* The port Xbox titles use by default. */
@@ -135,46 +136,94 @@ static BOOLEAN WINAPI x_networking_XNetworkingUnregisterPreferredLocalUdpMultipl
     return TRUE;
 }
 
+/*
+ * Security information for a URL: Windows returns the TLS versions to allow and, for some Xbox
+ * services, certificate thumbprints to pin. No pins are known here, so only the protocol versions
+ * are reported. WinHTTP still validates every server certificate against the system roots.
+ */
+#define SECURITY_PROTOCOLS (WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2 | WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_3)
+
+static HRESULT WINAPI security_information_provider( XAsyncOp op, const XAsyncProviderData *data )
+{
+    XNetworkingSecurityInformation *info;
+
+    switch (op)
+    {
+        case XAsyncOp_Begin:
+            return IXThreadingImpl_XAsyncSchedule( x_threading_impl, data->async, 0 );
+        case XAsyncOp_DoWork:
+            IXThreadingImpl_XAsyncComplete( x_threading_impl, data->async, S_OK, sizeof(*info) );
+            return S_OK;
+        case XAsyncOp_GetResult:
+            if (data->bufferSize < sizeof(*info)) return HRESULT_FROM_WIN32( ERROR_INSUFFICIENT_BUFFER );
+            info = data->buffer;
+            info->enabledHttpSecurityProtocolFlags = SECURITY_PROTOCOLS;
+            info->thumbprintCount = 0;
+            info->thumbprints = NULL;
+            return S_OK;
+        default:
+            return S_OK;
+    }
+}
+
+static HRESULT security_information_result( XAsyncBlock *async, SIZE_T size, SIZE_T *used, UINT8 *buffer, XNetworkingSecurityInformation **info )
+{
+    HRESULT hr;
+
+    if (!buffer || !info) return E_INVALIDARG;
+    if (SUCCEEDED(hr = IXThreadingImpl_XAsyncGetResult( x_threading_impl, async, security_information_provider, size, buffer, used )))
+        *info = (XNetworkingSecurityInformation *)buffer;
+    return hr;
+}
+
 static HRESULT WINAPI x_networking_XNetworkingQuerySecurityInformationForUrlAsync( IXNetworkingImpl2 *iface, const char *url, XAsyncBlock *asyncBlock )
 {
-    FIXME( "iface %p, url %p, asyncBlock %p stub!\n", iface, url, asyncBlock );
-    return E_NOTIMPL;
+    TRACE( "iface %p, url %s, asyncBlock %p.\n", iface, debugstr_a( url ), asyncBlock );
+
+    if (!url || !asyncBlock) return E_INVALIDARG;
+    return IXThreadingImpl_XAsyncBegin( x_threading_impl, asyncBlock, NULL, security_information_provider, "XNetworkingQuerySecurityInformationForUrlAsync", security_information_provider );
 }
 
 static HRESULT WINAPI x_networking_XNetworkingQuerySecurityInformationForUrlAsyncResultSize( IXNetworkingImpl2 *iface, XAsyncBlock *asyncBlock, SIZE_T *securityInformationBufferByteCount )
 {
-    FIXME( "iface %p, asyncBlock %p, securityInformationBufferByteCount %p stub!\n", iface, asyncBlock, securityInformationBufferByteCount );
-    return E_NOTIMPL;
+    TRACE( "iface %p, asyncBlock %p, securityInformationBufferByteCount %p.\n", iface, asyncBlock, securityInformationBufferByteCount );
+    return IXThreadingImpl_XAsyncGetResultSize( x_threading_impl, asyncBlock, securityInformationBufferByteCount );
 }
 
 static HRESULT WINAPI x_networking_XNetworkingQuerySecurityInformationForUrlAsyncResult( IXNetworkingImpl2 *iface, XAsyncBlock *asyncBlock, SIZE_T securityInformationBufferByteCount, SIZE_T *securityInformationBufferByteCountUsed, UINT8 *securityInformationBuffer, XNetworkingSecurityInformation **securityInformation )
 {
-    FIXME( "iface %p, asyncBlock %p, securityInformationBufferByteCount %Iu, securityInformationBufferByteCountUsed %p, securityInformationBuffer %p, securityInformation %p stub!\n", iface, asyncBlock, securityInformationBufferByteCount, securityInformationBufferByteCountUsed, securityInformationBuffer, securityInformation );
-    return E_NOTIMPL;
+    TRACE( "iface %p, asyncBlock %p, securityInformationBufferByteCount %Iu, securityInformationBufferByteCountUsed %p, securityInformationBuffer %p, securityInformation %p.\n", iface, asyncBlock, securityInformationBufferByteCount, securityInformationBufferByteCountUsed, securityInformationBuffer, securityInformation );
+    return security_information_result( asyncBlock, securityInformationBufferByteCount, securityInformationBufferByteCountUsed, securityInformationBuffer, securityInformation );
 }
 
 static HRESULT WINAPI x_networking_XNetworkingQuerySecurityInformationForUrlUtf16Async( IXNetworkingImpl2 *iface, const WCHAR *url, XAsyncBlock *asyncBlock )
 {
-    FIXME( "iface %p, url %p, asyncBlock %p stub!\n", iface, url, asyncBlock );
-    return E_NOTIMPL;
+    TRACE( "iface %p, url %s, asyncBlock %p.\n", iface, debugstr_w( url ), asyncBlock );
+
+    if (!url || !asyncBlock) return E_INVALIDARG;
+    return IXThreadingImpl_XAsyncBegin( x_threading_impl, asyncBlock, NULL, security_information_provider, "XNetworkingQuerySecurityInformationForUrlUtf16Async", security_information_provider );
 }
 
 static HRESULT WINAPI x_networking_XNetworkingQuerySecurityInformationForUrlUtf16AsyncResultSize( IXNetworkingImpl2 *iface, XAsyncBlock *asyncBlock, SIZE_T *securityInformationBufferByteCount )
 {
-    FIXME( "iface %p, asyncBlock %p, securityInformationBufferByteCount %p stub!\n", iface, asyncBlock, securityInformationBufferByteCount );
-    return E_NOTIMPL;
+    TRACE( "iface %p, asyncBlock %p, securityInformationBufferByteCount %p.\n", iface, asyncBlock, securityInformationBufferByteCount );
+    return IXThreadingImpl_XAsyncGetResultSize( x_threading_impl, asyncBlock, securityInformationBufferByteCount );
 }
 
 static HRESULT WINAPI x_networking_XNetworkingQuerySecurityInformationForUrlUtf16AsyncResult( IXNetworkingImpl2 *iface, XAsyncBlock *asyncBlock, SIZE_T securityInformationBufferByteCount, SIZE_T *securityInformationBufferByteCountUsed, UINT8 *securityInformationBuffer, XNetworkingSecurityInformation **securityInformation )
 {
-    FIXME( "iface %p, asyncBlock %p, securityInformationBufferByteCount %Iu, securityInformationBufferByteCountUsed %p, securityInformationBuffer %p, securityInformation %p stub!\n", iface, asyncBlock, securityInformationBufferByteCount, securityInformationBufferByteCountUsed, securityInformationBuffer, securityInformation );
-    return E_NOTIMPL;
+    TRACE( "iface %p, asyncBlock %p, securityInformationBufferByteCount %Iu, securityInformationBufferByteCountUsed %p, securityInformationBuffer %p, securityInformation %p.\n", iface, asyncBlock, securityInformationBufferByteCount, securityInformationBufferByteCountUsed, securityInformationBuffer, securityInformation );
+    return security_information_result( asyncBlock, securityInformationBufferByteCount, securityInformationBufferByteCountUsed, securityInformationBuffer, securityInformation );
 }
 
 static HRESULT WINAPI x_networking_XNetworkingVerifyServerCertificate( IXNetworkingImpl2 *iface, void *requestHandle, const XNetworkingSecurityInformation *securityInformation )
 {
-    FIXME( "iface %p, requestHandle %p, securityInformation %p stub!\n", iface, requestHandle, securityInformation );
-    return E_NOTIMPL;
+    TRACE( "iface %p, requestHandle %p, securityInformation %p.\n", iface, requestHandle, securityInformation );
+
+    if (!requestHandle || !securityInformation) return E_INVALIDARG;
+    /* No thumbprints are ever reported, and WinHTTP has already validated the chain. */
+    if (securityInformation->thumbprintCount) FIXME( "certificate pinning is not supported.\n" );
+    return S_OK;
 }
 
 static HRESULT WINAPI x_networking_XNetworkingGetConnectivityHint( IXNetworkingImpl2 *iface, XNetworkingConnectivityHint *connectivityHint )

@@ -107,12 +107,13 @@ static HRESULT WINAPI user_add_provider( XAsyncOp op, const XAsyncProviderData *
 }
 
 /*
- * Xbox Live token requests. Xodus fetches an XSTS token for the Xbox Live relying party before
- * starting the game and passes the ready to use Authorization header in XODUS_XBL_AUTH.
+ * Xbox Live token requests. The Xodus bridge looks up the relying party of the URL and answers
+ * the Authorization header for it; URLs that need no token get an empty one, like on Windows.
  * Requests that need a signature are answered without one.
  */
 struct token_request
 {
+    char *body;
     char *token;
 };
 
@@ -128,11 +129,14 @@ static HRESULT WINAPI token_provider( XAsyncOp op, const XAsyncProviderData *dat
             return IXThreadingImpl_XAsyncSchedule( x_threading_impl, data->async, 0 );
 
         case XAsyncOp_DoWork:
-            if (!request->token)
-                IXThreadingImpl_XAsyncComplete( x_threading_impl, data->async, HRESULT_FROM_WIN32( ERROR_NOT_LOGGED_ON ), 0 );
-            else
-                IXThreadingImpl_XAsyncComplete( x_threading_impl, data->async, S_OK, sizeof(*result) + strlen( request->token ) + 2 );
+        {
+            HRESULT hr = gdkc_bridge_post( L"/xbl/token", request->body, &request->token );
+
+            if (FAILED(hr)) WARN( "token request failed, hr %#lx.\n", hr );
+            IXThreadingImpl_XAsyncComplete( x_threading_impl, data->async, hr,
+                                            SUCCEEDED(hr) ? sizeof(*result) + strlen( request->token ) + 2 : 0 );
             return S_OK;
+        }
 
         case XAsyncOp_GetResult:
             token_size = strlen( request->token ) + 1;
@@ -147,8 +151,9 @@ static HRESULT WINAPI token_provider( XAsyncOp op, const XAsyncProviderData *dat
             return S_OK;
 
         case XAsyncOp_Cleanup:
-            HeapFree( GetProcessHeap(), 0, request->token );
-            HeapFree( GetProcessHeap(), 0, request );
+            free( request->body );
+            free( request->token );
+            free( request );
             return S_OK;
 
         default:
@@ -376,28 +381,31 @@ static HRESULT WINAPI x_user_XUserResolvePrivilegeWithUiResult( IXUserImpl6 *ifa
 static HRESULT WINAPI x_user_XUserGetTokenAndSignatureAsync( IXUserImpl6 *iface, XUserHandle user, XUserGetTokenAndSignatureOptions options, const char *method, const char *url, SIZE_T headerCount, const XUserGetTokenAndSignatureHttpHeader *headers, SIZE_T bodySize, const void *bodyBuffer, XAsyncBlock *async )
 {
     struct token_request *request;
-    char token[4096];
-    DWORD len;
+    UINT32 title_id;
+    SIZE_T len;
     HRESULT hr;
 
     TRACE( "iface %p, user %p, options %d, method %s, url %s, headerCount %Iu, headers %p, bodySize %Iu, bodyBuffer %p, async %p.\n", iface, user, options, debugstr_a( method ), debugstr_a( url ), headerCount, headers, bodySize, bodyBuffer, async );
 
-    if (!user || !async) return E_INVALIDARG;
-    if (!(request = HeapAlloc( GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*request) ))) return E_OUTOFMEMORY;
+    if (!user || !async || !method || !url) return E_INVALIDARG;
+    if (strpbrk( method, "\r\n" ) || strpbrk( url, "\r\n" )) return E_INVALIDARG;
+    /* Without Xodus there is nobody to ask for a token: behave like an unsupported service. */
+    if (!gdkc_bridge_available()) return E_NOTIMPL;
 
-    len = GetEnvironmentVariableA( "XODUS_XBL_AUTH", token, sizeof(token) );
-    if (!len || len >= sizeof(token))
+    if (!(request = calloc( 1, sizeof(*request) ))) return E_OUTOFMEMORY;
+    if (!gdkc_config_get_title_id( &title_id )) title_id = 0;
+    len = strlen( method ) + strlen( url ) + 16;
+    if (!(request->body = malloc( len )))
     {
-        /* No Xbox Live token was handed over: behave like an unsupported service. */
-        HeapFree( GetProcessHeap(), 0, request );
-        return E_NOTIMPL;
+        free( request );
+        return E_OUTOFMEMORY;
     }
-    if ((request->token = HeapAlloc( GetProcessHeap(), 0, len + 1 ))) memcpy( request->token, token, len + 1 );
+    sprintf( request->body, "%s\n%s\n%d\n%u", method, url, (options & XUserGetTokenAndSignatureOptions_ForceRefresh) ? 1 : 0, title_id );
 
     if (FAILED(hr = IXThreadingImpl_XAsyncBegin( x_threading_impl, async, request, x_user_XUserGetTokenAndSignatureAsync, "XUserGetTokenAndSignatureAsync", token_provider )))
     {
-        HeapFree( GetProcessHeap(), 0, request->token );
-        HeapFree( GetProcessHeap(), 0, request );
+        free( request->body );
+        free( request );
     }
     return hr;
 }
