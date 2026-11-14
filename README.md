@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/Tux-Force/tux-force/main/brand/png/logo-horizontal-dark-bg.png" />
+    <img src="https://raw.githubusercontent.com/Tux-Force/tux-force/main/brand/png/logo-horizontal-light-bg.png" alt="Tux-Force" width="420" />
+  </picture>
+</p>
+
 # xgameruntime (Tux-Force)
 
 Open source implementation of `xgameruntime.dll`, the Microsoft GDK runtime that Xbox PC games load, for use in Wine
