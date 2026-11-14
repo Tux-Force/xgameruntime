@@ -33,8 +33,8 @@ onto that code base is planned, module by module.
 
 ## Talking to xTux
 
-`xodus-cli run` passes `XODUS_BRIDGE_PORT` and `XODUS_BRIDGE_SECRET`. `xodusbridge.c` sends plain text requests over
-WinHTTP to `127.0.0.1`; the protocol is documented in xTux (`crates/xodus-cli/src/commands/bridge.rs`). Account
+`xtux-cli run` passes `XODUS_BRIDGE_PORT` and `XODUS_BRIDGE_SECRET`. `xodusbridge.c` sends plain text requests over
+WinHTTP to `127.0.0.1`; the protocol is documented in xTux (`crates/xtux-cli/src/commands/bridge.rs`). Account
 tokens never enter the game process, only the per-request results do.
 
 ## Building
