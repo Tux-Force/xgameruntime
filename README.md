@@ -10,16 +10,17 @@
 Open source implementation of `xgameruntime.dll`, the Microsoft GDK runtime that Xbox PC games load, for use in Wine
 with [xTux](https://github.com/Tux-Force/xTux). Part of [Tux-Force](https://github.com/Tux-Force).
 
-This is a **soft fork of [xodus-gaming/xgameruntime](https://github.com/xodus-gaming/xgameruntime)**. The `tux-force`
-branch builds on upstream's C implementation (`legacy-c`) and is used as the `dlls/xgameruntime` submodule of
-[Tux-Force/wine](https://github.com/Tux-Force/wine). Upstream has started a C++ rewrite on `main`; moving our work
+This is a **soft fork of [xodus-gaming/xgameruntime](https://github.com/xodus-gaming/xgameruntime)**. Our `develop`
+and `main` branches build on upstream's C implementation (`upstream/legacy-c`) and are used as the
+`dlls/xgameruntime` submodule of [Tux-Force/wine](https://github.com/Tux-Force/wine). Upstream has started a C++
+rewrite (`upstream/main`); moving our work
 onto that code base is planned, module by module.
 
 > [!CAUTION]
 > Unofficial community project, not affiliated with, endorsed by, or sponsored by Microsoft or XBOX. Written from
 > public GDK documentation and observed behaviour; it contains no Microsoft code.
 
-## What the `tux-force` branch implements
+## What this fork implements
 
 - **XTaskQueue / XAsync:** full task queues (manual, thread pool, serialized, immediate ports, delayed callbacks,
   monitors, waiters, termination) and async blocks with correct lifetimes.
