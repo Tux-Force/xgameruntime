@@ -72,8 +72,11 @@ static ULONG WINAPI x_game_Release( IXGameImpl3 *iface )
 
 static HRESULT WINAPI x_game_XGameGetXboxTitleId( IXGameImpl3 *iface, UINT32 *titleId )
 {
-    FIXME( "iface %p, titleId %p stub!\n", iface, titleId );
-    return E_NOTIMPL;
+    TRACE( "iface %p, titleId %p.\n", iface, titleId );
+
+    if (!titleId) return E_INVALIDARG;
+    if (!gdkc_config_get_title_id( titleId )) return E_GAMERUNTIME_GAMECONFIG_BAD_FORMAT;
+    return S_OK;
 }
 
 static void WINAPI x_game_XLaunchNewGame( IXGameImpl3 *iface, const char *exePath, const char *args, XUserHandle defaultUser )

@@ -66,6 +66,12 @@ HRESULT WINAPI InitializeApiImpl( ULONG gdkVer, ULONG gsVer )
     return InitializeApiImplEx2( gdkVer, gsVer, 0, NULL );
 }
 
+/* Called by XGameRuntimeUninitialize. Nothing needs to be released, the process is about to exit. */
+void WINAPI UninitializeApiImpl(void)
+{
+    TRACE( "\n" );
+}
+
 HRESULT WINAPI QueryApiImpl( REFCLSID clsid, REFIID iid, void **out )
 {
     TRACE( "clsid %s, iid %s, out %p.\n", debugstr_guid( clsid ), debugstr_guid( iid ), out );

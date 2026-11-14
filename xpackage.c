@@ -70,49 +70,90 @@ static ULONG WINAPI x_package_Release( IXPackageImpl3 *iface )
     return ref;
 }
 
+struct XPackageInstallationMonitor
+{
+    UINT32 interval_ms;
+};
+
 static HRESULT WINAPI x_package_XPackageGetCurrentProcessPackageIdentifier( IXPackageImpl3 *iface, SIZE_T bufferSize, char *buffer )
 {
-    FIXME( "iface %p, bufferSize %Iu, buffer %p stub!\n", iface, bufferSize, buffer );
-    return E_NOTIMPL;
+    char id[64];
+    DWORD len;
+
+    TRACE( "iface %p, bufferSize %Iu, buffer %p.\n", iface, bufferSize, buffer );
+
+    if (!buffer) return E_INVALIDARG;
+
+    /* The package identifier is the content id of the package. Xodus passes it down to the game process. */
+    len = GetEnvironmentVariableA( "XODUS_PACKAGE_ID", id, sizeof(id) );
+    if (!len || len >= sizeof(id)) return E_GAMERUNTIME_GAMECONFIG_BAD_FORMAT;
+    if (len + 1 > bufferSize) return HRESULT_FROM_WIN32( ERROR_INSUFFICIENT_BUFFER );
+
+    strcpy( buffer, id );
+    return S_OK;
 }
 
 static BOOLEAN WINAPI x_package_XPackageIsPackagedProcess( IXPackageImpl3 *iface )
 {
-    FIXME( "iface %p stub!\n", iface );
-    return FALSE;
+    TRACE( "iface %p.\n", iface );
+    return gdkc_config_available();
 }
 
 static HRESULT WINAPI x_package_XPackageCreateInstallationMonitor( IXPackageImpl3 *iface, const char *packageIdentifier, UINT32 selectorCount, XPackageChunkSelector *selectors, UINT32 minimumUpdateIntervalMs, XTaskQueueHandle queue, XPackageInstallationMonitorHandle *installationMonitor )
 {
-    FIXME( "iface %p, packageIdentifier %s, selectorCount %u, selectors %p, minimumUpdateIntervalMs %u, queue %p, installationMonitor %p stub!\n", iface, debugstr_a( packageIdentifier ), selectorCount, selectors, minimumUpdateIntervalMs, queue, installationMonitor );
-    return E_NOTIMPL;
+    struct XPackageInstallationMonitor *monitor;
+
+    TRACE( "iface %p, packageIdentifier %s, selectorCount %u, selectors %p, minimumUpdateIntervalMs %u, queue %p, installationMonitor %p.\n", iface, debugstr_a( packageIdentifier ), selectorCount, selectors, minimumUpdateIntervalMs, queue, installationMonitor );
+
+    if (!packageIdentifier || !installationMonitor) return E_INVALIDARG;
+    if (!(monitor = HeapAlloc( GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*monitor) ))) return E_OUTOFMEMORY;
+    monitor->interval_ms = minimumUpdateIntervalMs;
+
+    *installationMonitor = monitor;
+    return S_OK;
 }
 
 static void WINAPI x_package_XPackageCloseInstallationMonitorHandle( IXPackageImpl3 *iface, XPackageInstallationMonitorHandle installationMonitor )
 {
-    FIXME( "iface %p, installationMonitor %p stub!\n", iface, installationMonitor );
+    TRACE( "iface %p, installationMonitor %p.\n", iface, installationMonitor );
+    HeapFree( GetProcessHeap(), 0, installationMonitor );
 }
 
 static void WINAPI x_package_XPackageGetInstallationProgress( IXPackageImpl3 *iface, XPackageInstallationMonitorHandle installationMonitor, XPackageInstallationProgress *progress )
 {
-    FIXME( "iface %p, installationMonitor %p, progress %p stub!\n", iface, installationMonitor, progress );
+    TRACE( "iface %p, installationMonitor %p, progress %p.\n", iface, installationMonitor, progress );
+
+    if (!progress) return;
+    /* Packages downloaded by Xodus are always fully installed. */
+    memset( progress, 0, sizeof(*progress) );
+    progress->totalBytes = 1;
+    progress->installedBytes = 1;
+    progress->launchBytes = 1;
+    progress->launchable = TRUE;
+    progress->completed = TRUE;
 }
 
 static BOOLEAN WINAPI x_package_XPackageUpdateInstallationMonitor( IXPackageImpl3 *iface, XPackageInstallationMonitorHandle installationMonitor )
 {
-    FIXME( "iface %p, installationMonitor %p stub!\n", iface, installationMonitor );
+    TRACE( "iface %p, installationMonitor %p.\n", iface, installationMonitor );
     return TRUE;
 }
 
 static HRESULT WINAPI x_package_XPackageRegisterInstallationProgressChanged( IXPackageImpl3 *iface, XPackageInstallationMonitorHandle installationMonitor, void *context, XPackageInstallationProgressCallback *callback, XTaskQueueRegistrationToken *token )
 {
-    FIXME( "iface %p, installationMonitor %p, context %p, callback %p, token %p stub!\n", iface, installationMonitor, context, callback, token );
-    return E_NOTIMPL;
+    static LONG64 next_token;
+
+    TRACE( "iface %p, installationMonitor %p, context %p, callback %p, token %p.\n", iface, installationMonitor, context, callback, token );
+
+    if (!installationMonitor || !callback || !token) return E_INVALIDARG;
+    /* The installation state never changes, so the callback is never invoked. */
+    token->token = InterlockedIncrement64( &next_token );
+    return S_OK;
 }
 
 static BOOLEAN WINAPI x_package_XPackageUnregisterInstallationProgressChanged( IXPackageImpl3 *iface, XPackageInstallationMonitorHandle installationMonitor, XTaskQueueRegistrationToken token, BOOLEAN wait )
 {
-    FIXME( "iface %p, installationMonitor %p, token %p, wait %d stub!\n", iface, installationMonitor, &token, wait );
+    TRACE( "iface %p, installationMonitor %p, token %I64u, wait %d.\n", iface, installationMonitor, token.token, wait );
     return TRUE;
 }
 

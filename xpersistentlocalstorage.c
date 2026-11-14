@@ -70,22 +70,76 @@ static ULONG WINAPI x_persistent_local_storage_Release( IXPersistentLocalStorage
     return ref;
 }
 
+/* Builds (and creates) the title's persistent storage directory in UTF-8. */
+HRESULT gdkc_get_storage_path( char *out, SIZE_T size, SIZE_T *used )
+{
+    char family[256], base[MAX_PATH], path[MAX_PATH * 2];
+    DWORD len;
+    char *p;
+
+    if (!gdkc_config_get_package_family_name( family, sizeof(family) )) return E_GAMERUNTIME_GAMECONFIG_BAD_FORMAT;
+    len = GetEnvironmentVariableA( "LOCALAPPDATA", base, sizeof(base) );
+    if (!len || len >= sizeof(base)) return HRESULT_FROM_WIN32( ERROR_ENVVAR_NOT_FOUND );
+
+    snprintf( path, sizeof(path), "%s\\Packages\\%s\\LocalState", base, family );
+
+    /* Create every missing component of the path. */
+    for (p = path + 3; *p; p++)
+    {
+        if (*p != '\\') continue;
+        *p = 0;
+        CreateDirectoryA( path, NULL );
+        *p = '\\';
+    }
+    CreateDirectoryA( path, NULL );
+
+    *used = strlen( path ) + 1;
+    if (out)
+    {
+        if (*used > size) return HRESULT_FROM_WIN32( ERROR_INSUFFICIENT_BUFFER );
+        memcpy( out, path, *used );
+    }
+    return S_OK;
+}
+
 static HRESULT WINAPI x_persistent_local_storage_XPersistentLocalStorageGetPath( IXPersistentLocalStorageImpl3 *iface, SIZE_T pathSize, char *path, SIZE_T *pathUsed )
 {
-    FIXME( "iface %p, pathSize %Iu, path %p, pathUsed %p stub!\n", iface, pathSize, path, pathUsed );
-    return E_NOTIMPL;
+    SIZE_T used;
+    HRESULT hr;
+
+    TRACE( "iface %p, pathSize %Iu, path %p, pathUsed %p.\n", iface, pathSize, path, pathUsed );
+
+    if (!path) return E_INVALIDARG;
+    if (SUCCEEDED(hr = gdkc_get_storage_path( path, pathSize, &used )) && pathUsed) *pathUsed = used;
+    return hr;
 }
 
 static HRESULT WINAPI x_persistent_local_storage_XPersistentLocalStorageGetPathSize( IXPersistentLocalStorageImpl3 *iface, SIZE_T *pathSize )
 {
-    FIXME( "iface %p, pathSize %p stub!\n", iface, pathSize );
-    return E_NOTIMPL;
+    TRACE( "iface %p, pathSize %p.\n", iface, pathSize );
+
+    if (!pathSize) return E_INVALIDARG;
+    return gdkc_get_storage_path( NULL, 0, pathSize );
 }
 
 static HRESULT WINAPI x_persistent_local_storage_XPersistentLocalStorageGetSpaceInfo( IXPersistentLocalStorageImpl3 *iface, XPersistentLocalStorageSpaceInfo *info )
 {
-    FIXME( "iface %p, info %p stub!\n", iface, info );
-    return E_NOTIMPL;
+    ULARGE_INTEGER available, total, free;
+    char path[MAX_PATH * 2];
+    SIZE_T used;
+    HRESULT hr;
+
+    TRACE( "iface %p, info %p.\n", iface, info );
+
+    if (!info) return E_INVALIDARG;
+    if (FAILED(hr = gdkc_get_storage_path( path, sizeof(path), &used ))) return hr;
+    if (!GetDiskFreeSpaceExA( path, &available, &total, &free )) return HRESULT_FROM_WIN32( GetLastError() );
+
+    info->availableFreeBytes = available.QuadPart;
+    info->totalFreeBytes = free.QuadPart;
+    info->totalBytes = total.QuadPart;
+    info->usedBytes = total.QuadPart - free.QuadPart;
+    return S_OK;
 }
 
 static HRESULT WINAPI x_persistent_local_storage_XPersistentLocalStorageMountForPackage( IXPersistentLocalStorageImpl3 *iface, const char *packageIdentifier, XPackageMountHandle *mountHandle )

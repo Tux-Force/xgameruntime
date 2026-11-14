@@ -21,6 +21,8 @@
 
 #include "private.h"
 
+#include "wine/list.h"
+
 WINE_DEFAULT_DEBUG_CHANNEL(gdkc);
 
 struct x_networking
@@ -89,14 +91,20 @@ static HRESULT WINAPI x_networking_XNetworkingQueryPreferredLocalUdpMultiplayerP
 
 static HRESULT WINAPI x_networking_XNetworkingRegisterPreferredLocalUdpMultiplayerPortChanged( IXNetworkingImpl2 *iface, XTaskQueueHandle queue, void *context, XNetworkingPreferredLocalUdpMultiplayerPortChangedCallback *callback, XTaskQueueRegistrationToken *token )
 {
-    FIXME( "iface %p, queue %p, context %p, callback %p, token %p stub!\n", iface, queue, context, callback, token );
-    return E_NOTIMPL;
+    static LONG64 next_token;
+
+    TRACE( "iface %p, queue %p, context %p, callback %p, token %p.\n", iface, queue, context, callback, token );
+
+    if (!callback || !token) return E_INVALIDARG;
+    /* The preferred port never changes, so the callback is never invoked. */
+    token->token = InterlockedIncrement64( &next_token );
+    return S_OK;
 }
 
 static BOOLEAN WINAPI x_networking_XNetworkingUnregisterPreferredLocalUdpMultiplayerPortChanged( IXNetworkingImpl2 *iface, XTaskQueueRegistrationToken token, BOOLEAN wait )
 {
-    FIXME( "iface %p, token %p, wait %d stub!\n", iface, &token, wait );
-    return FALSE;
+    TRACE( "iface %p, token %I64u, wait %d.\n", iface, token.token, wait );
+    return TRUE;
 }
 
 static HRESULT WINAPI x_networking_XNetworkingQuerySecurityInformationForUrlAsync( IXNetworkingImpl2 *iface, const char *url, XAsyncBlock *asyncBlock )
@@ -143,20 +151,107 @@ static HRESULT WINAPI x_networking_XNetworkingVerifyServerCertificate( IXNetwork
 
 static HRESULT WINAPI x_networking_XNetworkingGetConnectivityHint( IXNetworkingImpl2 *iface, XNetworkingConnectivityHint *connectivityHint )
 {
-    FIXME( "iface %p, connectivityHint %p stub!\n", iface, connectivityHint );
-    return E_NOTIMPL;
+    TRACE( "iface %p, connectivityHint %p.\n", iface, connectivityHint );
+
+    if (!connectivityHint) return E_INVALIDARG;
+    memset( connectivityHint, 0, sizeof(*connectivityHint) );
+    connectivityHint->connectivityLevel = XNetworkingConnectivityLevelHint_InternetAccess;
+    connectivityHint->connectivityCost = XNetworkingConnectivityCostHint_Unrestricted;
+    connectivityHint->ianaInterfaceType = 6; /* ethernetCsmacd */
+    connectivityHint->networkInitialized = TRUE;
+    return S_OK;
+}
+
+struct hint_registration
+{
+    struct list entry;
+    UINT64 token;
+    void *context;
+    XNetworkingConnectivityHintChangedCallback *callback;
+    BOOL notified;
+};
+
+static struct list hint_registrations = LIST_INIT( hint_registrations );
+static CRITICAL_SECTION hint_cs;
+static CRITICAL_SECTION_DEBUG hint_cs_debug =
+{
+    0, 0, &hint_cs,
+    { &hint_cs_debug.ProcessLocksList, &hint_cs_debug.ProcessLocksList },
+      0, 0, { (DWORD_PTR)(__FILE__ ": hint_cs") }
+};
+static CRITICAL_SECTION hint_cs = { &hint_cs_debug, -1, 0, 0, 0, 0 };
+
+/* Delivers the current hint to a registration that has not seen it yet. */
+static void WINAPI hint_initial_callback( void *arg, BOOLEAN canceled )
+{
+    UINT64 token = (UINT64)(UINT_PTR)arg;
+    XNetworkingConnectivityHintChangedCallback *callback = NULL;
+    XNetworkingConnectivityHint hint;
+    struct hint_registration *reg;
+    void *context = NULL;
+
+    EnterCriticalSection( &hint_cs );
+    LIST_FOR_EACH_ENTRY( reg, &hint_registrations, struct hint_registration, entry )
+    {
+        if (reg->token != token || reg->notified) continue;
+        reg->notified = TRUE;
+        callback = reg->callback;
+        context = reg->context;
+        break;
+    }
+    LeaveCriticalSection( &hint_cs );
+
+    if (!callback || canceled) return;
+    x_networking_XNetworkingGetConnectivityHint( NULL, &hint );
+    callback( context, &hint );
 }
 
 static HRESULT WINAPI x_networking_XNetworkingRegisterConnectivityHintChanged( IXNetworkingImpl2 *iface, XTaskQueueHandle queue, void *context, XNetworkingConnectivityHintChangedCallback *callback, XTaskQueueRegistrationToken *token )
 {
-    FIXME( "iface %p, queue %p, context %p, callback %p, token %p stub!\n", iface, queue, context, callback, token );
-    return E_NOTIMPL;
+    static LONG64 next_token;
+    struct hint_registration *reg;
+    HRESULT hr;
+
+    TRACE( "iface %p, queue %p, context %p, callback %p, token %p.\n", iface, queue, context, callback, token );
+
+    if (!callback || !token) return E_INVALIDARG;
+    if (!(reg = calloc( 1, sizeof(*reg) ))) return E_OUTOFMEMORY;
+
+    reg->token = InterlockedIncrement64( &next_token );
+    reg->context = context;
+    reg->callback = callback;
+
+    EnterCriticalSection( &hint_cs );
+    list_add_tail( &hint_registrations, &reg->entry );
+    LeaveCriticalSection( &hint_cs );
+
+    /* Like Windows, report the current state once right after registration. Libraries such as
+     * XCurl wait for this first notification before they send any request. The state never
+     * changes afterwards. */
+    hr = IXThreadingImpl_XTaskQueueSubmitCallback( x_threading_impl, queue, XTaskQueuePort_Completion,
+                                                   (void *)(UINT_PTR)reg->token, hint_initial_callback );
+    if (FAILED(hr)) WARN( "failed to queue the initial connectivity hint, hr %#lx.\n", hr );
+
+    token->token = reg->token;
+    return S_OK;
 }
 
 static BOOLEAN WINAPI x_networking_XNetworkingUnregisterConnectivityHintChanged( IXNetworkingImpl2 *iface, XTaskQueueRegistrationToken token, BOOLEAN wait )
 {
-    FIXME( "iface %p, token %p, wait %d stub!\n", iface, &token, wait );
-    return FALSE;
+    struct hint_registration *reg;
+
+    TRACE( "iface %p, token %I64u, wait %d.\n", iface, token.token, wait );
+
+    EnterCriticalSection( &hint_cs );
+    LIST_FOR_EACH_ENTRY( reg, &hint_registrations, struct hint_registration, entry )
+    {
+        if (reg->token != token.token) continue;
+        list_remove( &reg->entry );
+        free( reg );
+        break;
+    }
+    LeaveCriticalSection( &hint_cs );
+    return TRUE;
 }
 
 static HRESULT WINAPI x_networking_XNetworkingQueryConfigurationSetting( IXNetworkingImpl2 *iface, XNetworkingConfigurationSetting configurationSetting, UINT64 *value )

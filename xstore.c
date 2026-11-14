@@ -73,15 +73,29 @@ static ULONG WINAPI x_store_Release( IXStoreImpl6 *iface )
     return ref;
 }
 
+struct XStoreContext
+{
+    XUserHandle user;
+};
+
 static HRESULT WINAPI x_store_XStoreCreateContext( IXStoreImpl6 *iface, const XUserHandle user, XStoreContextHandle *storeContextHandle )
 {
-    FIXME( "iface %p, user %p, storeContextHandle %p stub!\n", iface, user, storeContextHandle );
-    return E_NOTIMPL;
+    struct XStoreContext *context;
+
+    TRACE( "iface %p, user %p, storeContextHandle %p.\n", iface, user, storeContextHandle );
+
+    if (!storeContextHandle) return E_INVALIDARG;
+    if (!(context = HeapAlloc( GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*context) ))) return E_OUTOFMEMORY;
+    context->user = user;
+
+    *storeContextHandle = context;
+    return S_OK;
 }
 
 static void WINAPI x_store_XStoreCloseContextHandle( IXStoreImpl6 *iface, XStoreContextHandle storeContextHandle )
 {
-    FIXME( "iface %p, storeContextHandle %p stub!\n", iface, storeContextHandle );
+    TRACE( "iface %p, storeContextHandle %p.\n", iface, storeContextHandle );
+    HeapFree( GetProcessHeap(), 0, storeContextHandle );
 }
 
 static HRESULT WINAPI x_store_XStoreQueryAssociatedProductsAsync( IXStoreImpl6 *iface, const XStoreContextHandle storeContextHandle, XStoreProductKind productKinds, UINT32 maxItemsToRetrievePerPage, XAsyncBlock *async )
@@ -220,16 +234,57 @@ static HRESULT WINAPI x_store_XStoreCanAcquireLicenseForPackageResult( IXStoreIm
     return E_NOTIMPL;
 }
 
+/*
+ * Xodus only starts a title after it obtained the user's license from the Microsoft licensing
+ * service, and tells the game process about it with XODUS_LICENSE_VERIFIED.
+ */
+static BOOL is_license_verified(void)
+{
+    char value[8];
+    DWORD len = GetEnvironmentVariableA( "XODUS_LICENSE_VERIFIED", value, sizeof(value) );
+    return len && len < sizeof(value) && value[0] == '1';
+}
+
+static HRESULT WINAPI game_license_provider( XAsyncOp op, const XAsyncProviderData *data )
+{
+    XStoreGameLicense *license;
+
+    switch (op)
+    {
+        case XAsyncOp_Begin:
+            return IXThreadingImpl_XAsyncSchedule( x_threading_impl, data->async, 0 );
+
+        case XAsyncOp_DoWork:
+            IXThreadingImpl_XAsyncComplete( x_threading_impl, data->async, S_OK, sizeof(*license) );
+            return S_OK;
+
+        case XAsyncOp_GetResult:
+            if (data->bufferSize < sizeof(*license)) return HRESULT_FROM_WIN32( ERROR_INSUFFICIENT_BUFFER );
+            license = data->buffer;
+            memset( license, 0, sizeof(*license) );
+            gdkc_config_get_store_id( license->skuStoreId, sizeof(license->skuStoreId) );
+            license->isActive = is_license_verified();
+            return S_OK;
+
+        default:
+            return S_OK;
+    }
+}
+
 static HRESULT WINAPI x_store_XStoreQueryGameLicenseAsync( IXStoreImpl6 *iface, const XStoreContextHandle storeContextHandle, XAsyncBlock *async )
 {
-    FIXME( "iface %p, storeContextHandle %p, async %p stub!\n", iface, storeContextHandle, async );
-    return E_NOTIMPL;
+    TRACE( "iface %p, storeContextHandle %p, async %p.\n", iface, storeContextHandle, async );
+
+    if (!storeContextHandle || !async) return E_INVALIDARG;
+    return IXThreadingImpl_XAsyncBegin( x_threading_impl, async, NULL, x_store_XStoreQueryGameLicenseAsync, "XStoreQueryGameLicenseAsync", game_license_provider );
 }
 
 static HRESULT WINAPI x_store_XStoreQueryGameLicenseResult( IXStoreImpl6 *iface, XAsyncBlock *async, XStoreGameLicense *license )
 {
-    FIXME( "iface %p, async %p, license %p stub!\n", iface, async, license );
-    return E_NOTIMPL;
+    TRACE( "iface %p, async %p, license %p.\n", iface, async, license );
+
+    if (!license) return E_INVALIDARG;
+    return IXThreadingImpl_XAsyncGetResult( x_threading_impl, async, x_store_XStoreQueryGameLicenseAsync, sizeof(*license), license, NULL );
 }
 
 static HRESULT WINAPI x_store_XStoreQueryAddOnLicensesAsync( IXStoreImpl6 *iface, const XStoreContextHandle storeContextHandle, XAsyncBlock *async )
@@ -450,14 +505,20 @@ static HRESULT WINAPI x_store_XStoreQueryPackageIdentifier( IXStoreImpl6 *iface,
 
 static HRESULT WINAPI x_store_XStoreRegisterGameLicenseChanged( IXStoreImpl6 *iface, XStoreContextHandle storeContextHandle, XTaskQueueHandle queue, void *context, XStoreGameLicenseChangedCallback *callback, XTaskQueueRegistrationToken *token )
 {
-    FIXME( "iface %p, storeContextHandle %p, queue %p, context %p, callback %p, token %p stub!\n", iface, storeContextHandle, queue, context, callback, token );
-    return E_NOTIMPL;
+    static LONG64 next_token;
+
+    TRACE( "iface %p, storeContextHandle %p, queue %p, context %p, callback %p, token %p.\n", iface, storeContextHandle, queue, context, callback, token );
+
+    if (!storeContextHandle || !callback || !token) return E_INVALIDARG;
+    /* The license is checked once when Xodus starts the game, so it never changes while running. */
+    token->token = InterlockedIncrement64( &next_token );
+    return S_OK;
 }
 
 static BOOLEAN WINAPI x_store_XStoreUnregisterGameLicenseChanged( IXStoreImpl6 *iface, XStoreContextHandle storeContextHandle, XTaskQueueRegistrationToken token, BOOLEAN wait )
 {
-    FIXME( "iface %p, storeContextHandle %p, token %p, wait %d stub!\n", iface, storeContextHandle, &token, wait );
-    return FALSE;
+    TRACE( "iface %p, storeContextHandle %p, token %I64u, wait %d.\n", iface, storeContextHandle, token.token, wait );
+    return TRUE;
 }
 
 static HRESULT WINAPI x_store_XStoreRegisterPackageLicenseLost( IXStoreImpl6 *iface, XStoreLicenseHandle storeLicenseHandle, XTaskQueueHandle queue, void *context, XStorePackageLicenseLostCallback *callback, XTaskQueueRegistrationToken *token)
