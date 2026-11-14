@@ -12,8 +12,8 @@ with [xTux](https://github.com/Tux-Force/xTux). Part of [Tux-Force](https://gith
 
 This is a **soft fork of [xodus-gaming/xgameruntime](https://github.com/xodus-gaming/xgameruntime)**. The `tux-force`
 branch builds on upstream's C implementation (`legacy-c`) and is used as the `dlls/xgameruntime` submodule of
-[Tux-Force/wine](https://github.com/Tux-Force/wine). Upstream has started a C++ rewrite on `main`; porting our work
-there is planned, module by module, with pull requests back to upstream.
+[Tux-Force/wine](https://github.com/Tux-Force/wine). Upstream has started a C++ rewrite on `main`; moving our work
+onto that code base is planned, module by module.
 
 > [!CAUTION]
 > Unofficial community project, not affiliated with, endorsed by, or sponsored by Microsoft or XBOX. Written from
