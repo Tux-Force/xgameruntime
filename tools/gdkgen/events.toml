@@ -36,15 +36,15 @@ reason = "Activation events are raised by the Windows shell when a running game 
 [[never_fires]]
 register = "XPackageRegisterPackageInstalled"
 unregister = "XPackageUnregisterPackageInstalled"
-reason = "xTux does not install or update a game's packages or add-ons while that game runs, so no package is installed during a run and the callback is never invoked."
+reason = "xTux has no add-on (DLC) installs yet; its download queue only installs whole games, each into its own folder. So no package of the running game is installed during a run and the callback is never invoked. Replace this with a real implementation once xTux installs add-ons."
 
 [[never_fires]]
 register = "XPackageRegisterPackageInstalled2"
-reason = "xTux does not install or update a game's packages or add-ons while that game runs, so no package is installed during a run and the callback is never invoked."
+reason = "xTux has no add-on (DLC) installs yet; its download queue only installs whole games, each into its own folder. So no package of the running game is installed during a run and the callback is never invoked. Replace this with a real implementation once xTux installs add-ons."
 
 [[never_fires]]
 register = "XPackageRegisterPackageInstalled3"
-reason = "xTux does not install or update a game's packages or add-ons while that game runs, so no package is installed during a run and the callback is never invoked."
+reason = "xTux has no add-on (DLC) installs yet; its download queue only installs whole games, each into its own folder. So no package of the running game is installed during a run and the callback is never invoked. Replace this with a real implementation once xTux installs add-ons."
 
 [[never_fires]]
 register = "XGameStreamingRegisterConnectionStateChanged"
