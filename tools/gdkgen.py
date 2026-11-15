@@ -9,7 +9,7 @@ Commands:
                     given logs of game runs; the DLL logs its (fixme) lines by default, and
                     logs of the old Wine built-in DLL with WINEDEBUG=fixme+gdkc work too).
   check             Compare each C vtable with its IDL interface: wrong order, unknown entries,
-                    methods missing at the end.
+                    methods missing at the end. Also flags a plain %s in wide format strings.
   stubs [--write]   Generate C stubs for IDL methods missing at the end of a vtable (new GDK
                     interface versions). Prints them, or inserts them with --write.
   events [--write]  (Re)generate the bodies of the event registrations listed in
@@ -311,9 +311,28 @@ def missing_methods(ifaces, iface: str, entries: list[str]):
     return prefix, methods[len(entries) :], problems
 
 
+WIDE_FORMAT_RE = re.compile(r"\b(?:swprintf|_snwprintf|snwprintf|vswprintf|_vsnwprintf|swscanf)\s*\([^;]*?L\"((?:[^\"\\]|\\.)*)\"", re.S)
+
+
+def wide_format_problems() -> list[str]:
+    """A plain %s in a wide format string means char * in MinGW's C99 printf and WCHAR * in Wine's
+    msvcrt; only %ls means WCHAR * in both."""
+    out = []
+    for path in c_files():
+        text = path.read_text()
+        for m in WIDE_FORMAT_RE.finditer(text):
+            if re.search(r"%[-+ #0-9.*]*s", m.group(1)):
+                line = text.count("\n", 0, m.start()) + 1
+                out.append(f"{path.name}:{line}: plain %s in a wide format string, use %ls")
+    return out
+
+
 def cmd_check() -> int:
     ifaces = parse_interfaces()
     bad = 0
+    for p in wide_format_problems():
+        print(p)
+        bad += 1
     for path, iface, entries, _ in vtables():
         try:
             _, missing, problems = missing_methods(ifaces, iface, entries)
