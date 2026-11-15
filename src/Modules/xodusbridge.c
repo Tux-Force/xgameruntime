@@ -52,7 +52,7 @@ HRESULT gdkc_bridge_post( const WCHAR *path, const char *body, char **response )
         !GetEnvironmentVariableW( L"XODUS_BRIDGE_SECRET", secret, ARRAY_SIZE(secret) ))
         return HRESULT_FROM_WIN32( ERROR_SERVICE_NOT_ACTIVE );
     if (!(port = (INTERNET_PORT)wcstoul( port_str, NULL, 10 ))) return E_UNEXPECTED;
-    swprintf( header, ARRAY_SIZE(header), L"X-Xodus-Secret: %s\r\nContent-Type: text/plain\r\n", secret );
+    swprintf( header, ARRAY_SIZE(header), L"X-Xodus-Secret: %ls\r\nContent-Type: text/plain\r\n", secret );
 
     /* Always talk to the loopback interface directly, never through a proxy. */
     if (!(session = WinHttpOpen( L"xgameruntime", WINHTTP_ACCESS_TYPE_NO_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0 )))
