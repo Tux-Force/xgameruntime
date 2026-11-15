@@ -18,8 +18,10 @@ into the same DLL. COM vtables are the same in C and C++, so `QueryApiImpl` hand
 classes.
 
 > [!CAUTION]
-> Unofficial community project, not affiliated with, endorsed by, or sponsored by Microsoft or Xbox. Written from
-> public GDK documentation and observed behaviour; it contains no Microsoft code.
+> Unofficial community project, not affiliated with, endorsed by, or sponsored by Microsoft or Xbox. Our modules
+> are written from public GDK documentation and observed behaviour and contain no Microsoft code. Upstream's task
+> queue and async code (`src/System/Threading`) is adapted from Microsoft's open source, MIT licensed
+> [libHttpClient](https://github.com/microsoft/libHttpClient); nothing comes from the closed Windows runtime.
 
 ## What this fork implements
 

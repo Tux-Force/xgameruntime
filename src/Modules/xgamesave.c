@@ -681,7 +681,12 @@ static HRESULT WINAPI request_provider( XAsyncOp op, const XAsyncProviderData *d
 
 static HRESULT request_begin( XAsyncBlock *async, struct request *request, const void *identity, const char *name )
 {
+    struct request *stale;
     HRESULT hr;
+
+    /* A game may reuse an async block without asking for the result of its last request; that
+     * request is never cleaned up and must not be found again. */
+    while ((stale = request_find( async ))) request_free( stale );
 
     EnterCriticalSection( &requests_cs );
     request->async = async;
@@ -883,14 +888,15 @@ static HRESULT WINAPI x_game_save_XGameSaveReadBlobDataAsync( IXGameSaveImpl3 *i
 
 static HRESULT WINAPI x_game_save_XGameSaveReadBlobDataResult( IXGameSaveImpl3 *iface, XAsyncBlock *async, SIZE_T blobsSize, XGameSaveBlob *blobData, UINT32 *countOfBlobs )
 {
-    struct request *request = request_find( async );
-    UINT32 count;
+    struct request *request;
 
     TRACE( "iface %p, async %p, blobsSize %Iu, blobData %p, countOfBlobs %p.\n", iface, async, blobsSize, blobData, countOfBlobs );
 
-    if (!request || !blobData) return E_INVALIDARG;
-    count = request->count;
-    if (countOfBlobs) *countOfBlobs = count;
+    if (!async || !blobData) return E_INVALIDARG;
+    /* A failed read, or one without blobs, is cleaned up as soon as it completes; the async
+     * block still holds its status, so the result call reports it. */
+    request = request_find( async );
+    if (countOfBlobs) *countOfBlobs = request ? request->count : 0;
     return IXThreadingImpl_XAsyncGetResult( x_threading_impl, async, x_game_save_XGameSaveReadBlobDataAsync, blobsSize, blobData, NULL );
 }
 

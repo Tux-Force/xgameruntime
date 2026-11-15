@@ -6,7 +6,8 @@ of real games. Nothing here reads or reproduces Microsoft binaries.
 
 Commands:
   report [LOG...]   Markdown table of every stub, with how often games hit it (fixme lines in the
-                    given Wine logs, run with WINEDEBUG=fixme+gdkc).
+                    given logs of game runs; the DLL logs its (fixme) lines by default, and
+                    logs of the old Wine built-in DLL with WINEDEBUG=fixme+gdkc work too).
   check             Compare each C vtable with its IDL interface: wrong order, unknown entries,
                     methods missing at the end.
   stubs [--write]   Generate C stubs for IDL methods missing at the end of a vtable (new GDK
@@ -259,8 +260,9 @@ def load_events() -> list[dict]:
 def cmd_report(logs: list[str]) -> int:
     hits: Counter[str] = Counter()
     for log in logs:
-        for m in re.finditer(r"fixme:gdkc:(x_\w+)", Path(log).read_text(errors="replace")):
-            hits[m.group(1)] += 1
+        # Wine's debug channel format, and the format of the CMake build's logger.
+        for m in re.finditer(r"fixme:gdkc:(x_\w+)|\(fixme\) \S+::(x_\w+)", Path(log).read_text(errors="replace")):
+            hits[m.group(1) or m.group(2)] += 1
     event_names = {e[k] for e in load_events() for k in ("register", "unregister") if k in e}
     funcs = [f for f in all_functions() if f.is_stub]
     funcs.sort(key=lambda f: (-hits[f.name], f.path.name, f.start))

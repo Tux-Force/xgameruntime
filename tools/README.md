@@ -9,7 +9,7 @@ binaries and does not decompile anything, so the generated code stays as clean a
 
 | Command | What it does |
 |---|---|
-| `tools/gdkgen.py report [LOG...]` | Markdown table of all stubs, by kind (register, async, result, ...). With Wine logs of game runs (`WINEDEBUG=fixme+gdkc`) it also counts how often each stub was hit, so the ones games really call come first. |
+| `tools/gdkgen.py report [LOG...]` | Markdown table of all stubs, by kind (register, async, result, ...). With logs of game runs (the DLL logs its `(fixme)` lines by default; logs of the old Wine built-in DLL with `WINEDEBUG=fixme+gdkc` work too) it also counts how often each stub was hit, so the ones games really call come first. |
 | `tools/gdkgen.py check` | Compares every C vtable with its IDL interface: order, names, entries missing at the end. A wrong slot makes a game call the wrong function, so the CI runs this. |
 | `tools/gdkgen.py stubs [--write]` | Generates C stubs (FIXME trace, default return) for IDL methods that the vtable does not have yet, for example after a new interface version was added to the IDL. Prints them, or inserts the functions and vtable entries with `--write`. |
 | `tools/gdkgen.py events [--write]` | Generates the event registrations listed in `gdkgen/events.toml`. Exits 1 when the code is out of date; `--write` updates it. |
@@ -29,7 +29,7 @@ leaves hand-written functions (no marker, no `stub!`) alone.
 ### Typical loop
 
 ```sh
-WINEDEBUG=fixme+gdkc xtux-cli run <game> 2> game.log
+xtux-cli run <game> > game.log 2>&1
 tools/gdkgen.py report game.log | head -30
 ```
 
