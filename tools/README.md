@@ -35,3 +35,34 @@ tools/gdkgen.py report game.log | head -30
 
 The top of the report shows the stubs to work on next. Events go into `events.toml`; everything else is written by
 hand from the public GDK documentation.
+
+## migrate_upstream.py (prototype)
+
+Moves C modules of this fork onto upstream's C++ rewrite ([xodus-gaming/xgameruntime](https://github.com/xodus-gaming/xgameruntime),
+branch `main`). COM vtables are the same in C and C++, so the modules are not translated: they are copied as C files
+into upstream's `src/Legacy/` and compiled there behind a small layer for the Wine-only things they use.
+
+```sh
+git clone --recurse-submodules https://github.com/xodus-gaming/xgameruntime upstream
+tools/migrate_upstream.py upstream xgameprotocol xnetworking xstore xuser xpackage --wine-src ../wine
+cmake --preset win64 -S upstream && cmake --build upstream/build/windows-x64
+```
+
+What it does, per run (always pass the complete list of modules to move):
+
+- compares each module's IDL interfaces with upstream's and copies ours where they differ;
+- follows what the modules need: helper files such as `xgameconfig.c` and `xodusbridge.c` come along, other
+  interfaces must be moved in the same run, and anything from our `xthreading.c` is a blocker because upstream has
+  its own XThreading (`--dry-run` lists the blockers without writing anything);
+- rewrites the Wine-only idioms that do not compile against MinGW, for now the statically initialised
+  `CRITICAL_SECTION_DEBUG` critical sections;
+- writes `src/Legacy/` (modules, `private.h` built from ours, `wine_compat.h`, Wine's `wine/list.h`, a dispatcher for
+  `QueryApiImpl`) and patches upstream's `src/main.cpp` and `src/CMakeLists.txt` between marker comments;
+- links the import libraries from our `Makefile.in`.
+
+`migrate_smoke.c` checks the result under Wine: it loads the built DLL, gets the moved modules through upstream's
+`QueryApiImpl`, and has `XNetworking` deliver its connectivity hint through upstream's C++ task queue. Build and run
+instructions are at the top of the file.
+
+Not covered yet: modules that use `gdkc_async_context` from our XThreading (XGameSave), and building upstream's DLL
+inside Tux-Force/wine instead of Wine's own `dlls/xgameruntime`.
