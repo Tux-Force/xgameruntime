@@ -16,6 +16,19 @@
 #include <xasync.h>
 #include <xasyncprovider.h>
 #include <xgameprotocol.h>
+#include <xaccessibility.h>
+#include <xappcapture.h>
+#include <xdisplay.h>
+#include <xerror.h>
+#include <xgame.h>
+#include <xgameactivation.h>
+#include <xgameevent.h>
+#include <xgameinvite.h>
+#include <xgameruntimefeature.h>
+#include <xgamestreaming.h>
+#include <xgameui.h>
+#include <xpersistentlocalstorage.h>
+#include <xsystem.h>
 #include <xgamesave.h>
 #include <xnetworking.h>
 #include <xpackage.h>
@@ -91,20 +104,48 @@ int main( void )
         if (queue) IXThreadingImpl_XTaskQueueCloseHandle( threading, queue );
     }
 
-    /* The bigger modules at least come up. */
-    hr = query( &CLSID_XStoreImpl, &IID_IXStoreImpl, (void **)&unk );
-    CHECK( hr == S_OK && unk, "XStore from QueryApiImpl, hr %#lx\n", hr );
-    if (unk) { IUnknown_Release( unk ); unk = NULL; }
-    hr = query( &CLSID_XUserImpl, &IID_IXUserImpl, (void **)&unk );
-    CHECK( hr == S_OK && unk, "XUser from QueryApiImpl, hr %#lx\n", hr );
-    if (unk) { IUnknown_Release( unk ); unk = NULL; }
-    hr = query( &CLSID_XPackageImpl, &IID_IXPackageImpl, (void **)&unk );
-    CHECK( hr == S_OK && unk, "XPackage from QueryApiImpl, hr %#lx\n", hr );
-    if (unk) { IUnknown_Release( unk ); unk = NULL; }
+    /* Every module answers QueryApiImpl. */
+    {
+        static const struct { const GUID *clsid; const char *name; } all[] =
+        {
+            { &CLSID_XAccessibilityImpl, "XAccessibilityImpl" },
+            { &CLSID_XAppCaptureImpl, "XAppCaptureImpl" },
+            { &CLSID_XAppCaptureMetadataImpl, "XAppCaptureMetadataImpl" },
+            { &CLSID_XDisplayImpl, "XDisplayImpl" },
+            { &CLSID_XErrorImpl, "XErrorImpl" },
+            { &CLSID_XGameActivationImpl, "XGameActivationImpl" },
+            { &CLSID_XGameEventImpl, "XGameEventImpl" },
+            { &CLSID_XGameImpl, "XGameImpl" },
+            { &CLSID_XGameInviteImpl, "XGameInviteImpl" },
+            { &CLSID_XGameProtocolImpl, "XGameProtocolImpl" },
+            { &CLSID_XGameRuntimeFeatureImpl, "XGameRuntimeFeatureImpl" },
+            { &CLSID_XGameSaveImpl, "XGameSaveImpl" },
+            { &CLSID_XGameStreamingImpl, "XGameStreamingImpl" },
+            { &CLSID_XGameUiImpl, "XGameUiImpl" },
+            { &CLSID_XLauncherImpl, "XLauncherImpl" },
+            { &CLSID_XNetworkingImpl, "XNetworkingImpl" },
+            { &CLSID_XPackageImpl, "XPackageImpl" },
+            { &CLSID_XPersistentLocalStorageImpl, "XPersistentLocalStorageImpl" },
+            { &CLSID_XStoreImpl, "XStoreImpl" },
+            { &CLSID_XSystemAnalyticsImpl, "XSystemAnalyticsImpl" },
+            { &CLSID_XSystemImpl, "XSystemImpl" },
+            { &CLSID_XThreadingImpl, "XThreadingImpl" },
+            { &CLSID_XUserDeviceImpl, "XUserDeviceImpl" },
+            { &CLSID_XUserImpl, "XUserImpl" },
+        };
+        unsigned int i;
 
-    /* Not moved: still unknown to upstream. */
-    hr = query( &CLSID_XGameSaveImpl, &IID_IUnknown, (void **)&unk );
-    CHECK( hr == REGDB_E_CLASSNOTREG, "XGameSave (not moved) is unknown, hr %#lx\n", hr );
+        for (i = 0; i < ARRAYSIZE(all); i++)
+        {
+            hr = query( all[i].clsid, &IID_IUnknown, (void **)&unk );
+            CHECK( hr == S_OK && unk, "%s from QueryApiImpl, hr %#lx\n", all[i].name, hr );
+            if (unk) { IUnknown_Release( unk ); unk = NULL; }
+        }
+    }
+
+    /* An unknown class stays unknown. */
+    hr = query( &IID_IUnknown, &IID_IUnknown, (void **)&unk );
+    CHECK( hr == REGDB_E_CLASSNOTREG, "unknown class, hr %#lx\n", hr );
 
     printf( "%d failure(s)\n", failures );
     return failures ? 1 : 0;

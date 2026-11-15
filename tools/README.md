@@ -64,5 +64,5 @@ What it does, per run (always pass the complete list of modules to move):
 `QueryApiImpl`, and has `XNetworking` deliver its connectivity hint through upstream's C++ task queue. Build and run
 instructions are at the top of the file.
 
-Not covered yet: modules that use `gdkc_async_context` from our XThreading (XGameSave), and building upstream's DLL
+Not covered yet: building upstream's DLL
 inside Tux-Force/wine instead of Wine's own `dlls/xgameruntime`.
