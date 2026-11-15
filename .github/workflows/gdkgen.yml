@@ -1,0 +1,29 @@
+name: gdkgen
+
+on:
+  pull_request:
+  push:
+    branches: [develop, main]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Vtables and generated code
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      # Every C vtable matches its IDL interface (order, names, nothing missing).
+      - run: python3 tools/gdkgen.py check
+
+      # The generated event registrations match tools/gdkgen/events.toml.
+      - run: python3 tools/gdkgen.py events
+
+      - name: Stub report
+        run: python3 tools/gdkgen.py report >> "$GITHUB_STEP_SUMMARY"
