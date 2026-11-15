@@ -15,7 +15,8 @@ Commands:
                     tools/gdkgen/events.toml. Lists what is out of date (exit 1), or rewrites
                     it with --write.
 
-Run from anywhere; paths are relative to the repository root (the parent of tools/).
+Run from anywhere. The C modules are in src/Modules, the IDL in include/ (both relative to the
+repository root, the parent of tools/).
 """
 
 import argparse
@@ -73,12 +74,21 @@ class Function:
         return MARKER in self.body
 
 
+def c_dir() -> Path:
+    """The C modules: src/Modules since the move onto upstream's tree, before that the root."""
+    return ROOT / "src" / "Modules" if (ROOT / "src" / "Modules").is_dir() else ROOT
+
+
+def idl_dir() -> Path:
+    return ROOT / "include" if (ROOT / "include").is_dir() else ROOT
+
+
 def c_files() -> list[Path]:
-    return sorted(p for p in ROOT.glob("*.c"))
+    return sorted(c_dir().glob("*.c"))
 
 
 def idl_files() -> list[Path]:
-    return sorted(ROOT.glob("*.idl"))
+    return sorted(idl_dir().glob("*.idl"))
 
 
 def parse_functions(path: Path) -> list[Function]:
@@ -142,7 +152,7 @@ def flatten(ifaces: dict[str, Interface], name: str) -> list[tuple[str, str, str
 def parse_types() -> dict[str, str]:
     """Type name -> 'enum', 'struct', 'pointer' or the base type it aliases."""
     types: dict[str, str] = {}
-    sources = list(idl_files()) + sorted(ROOT.glob("*.h"))
+    sources = list(idl_files()) + sorted(idl_dir().glob("*.h"))
     for path in sources:
         text = re.sub(r"/\*.*?\*/", "", path.read_text(), flags=re.S)
         for m in re.finditer(r"typedef\s+(enum|struct|union)\s+(\w+)\s*\{.*?\}\s*(\w+)\s*;", text, re.S):

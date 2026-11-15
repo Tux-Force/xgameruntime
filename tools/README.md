@@ -4,7 +4,7 @@
 
 Code generation and stub bookkeeping for xgameruntime. Needs Python 3.11 or later and nothing else.
 
-Its only inputs are this repository's `.idl` and `.c` files and Wine logs of real games. It never reads Microsoft
+Its only inputs are this repository's IDL (`include/`), C modules (`src/Modules/`) and Wine logs of real games. It never reads Microsoft
 binaries and does not decompile anything, so the generated code stays as clean as the rest of the repository.
 
 | Command | What it does |
@@ -36,33 +36,9 @@ tools/gdkgen.py report game.log | head -30
 The top of the report shows the stubs to work on next. Events go into `events.toml`; everything else is written by
 hand from the public GDK documentation.
 
-## migrate_upstream.py (prototype)
+## migrate_upstream.py (history)
 
-Moves C modules of this fork onto upstream's C++ rewrite ([xodus-gaming/xgameruntime](https://github.com/xodus-gaming/xgameruntime),
-branch `main`). COM vtables are the same in C and C++, so the modules are not translated: they are copied as C files
-into upstream's `src/Legacy/` and compiled there behind a small layer for the Wine-only things they use.
-
-```sh
-git clone --recurse-submodules https://github.com/xodus-gaming/xgameruntime upstream
-tools/migrate_upstream.py upstream xgameprotocol xnetworking xstore xuser xpackage --wine-src ../wine
-cmake --preset win64 -S upstream && cmake --build upstream/build/windows-x64
-```
-
-What it does, per run (always pass the complete list of modules to move):
-
-- compares each module's IDL interfaces with upstream's and copies ours where they differ;
-- follows what the modules need: helper files such as `xgameconfig.c` and `xodusbridge.c` come along, other
-  interfaces must be moved in the same run, and anything from our `xthreading.c` is a blocker because upstream has
-  its own XThreading (`--dry-run` lists the blockers without writing anything);
-- rewrites the Wine-only idioms that do not compile against MinGW, for now the statically initialised
-  `CRITICAL_SECTION_DEBUG` critical sections;
-- writes `src/Legacy/` (modules, `private.h` built from ours, `wine_compat.h`, Wine's `wine/list.h`, a dispatcher for
-  `QueryApiImpl`) and patches upstream's `src/main.cpp` and `src/CMakeLists.txt` between marker comments;
-- links the import libraries from our `Makefile.in`.
-
-`migrate_smoke.c` checks the result under Wine: it loads the built DLL, gets the moved modules through upstream's
-`QueryApiImpl`, and has `XNetworking` deliver its connectivity hint through upstream's C++ task queue. Build and run
-instructions are at the top of the file.
-
-Not covered yet: building upstream's DLL
-inside Tux-Force/wine instead of Wine's own `dlls/xgameruntime`.
+This script moved our C modules onto upstream's C++ tree: it copied them as C into `src/Modules`, added
+`wine_compat.h`, the `QueryApiImpl` dispatcher and the CMake lines, and rewrote Wine's statically initialised critical
+sections. The move is done, so the script is gone from the tree; it is in the history of the
+`feature/upstream-migrator` branch.
