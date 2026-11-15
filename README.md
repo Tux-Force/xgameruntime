@@ -1,14 +1,15 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/Tux-Force/tux-force/main/brand/png/logo-horizontal-dark-bg.png" />
-    <img src="https://raw.githubusercontent.com/Tux-Force/tux-force/main/brand/png/logo-horizontal-light-bg.png" alt="Tux-Force" width="420" />
+    <source media="(prefers-color-scheme: dark)" srcset="https://tux-force.github.io/brand/logo-horizontal-dark-bg.png" />
+    <img src="https://tux-force.github.io/brand/logo-horizontal-light-bg.png" alt="Tux-Force" width="420" />
   </picture>
 </p>
 
 # xgameruntime (Tux-Force)
 
 Open source implementation of `xgameruntime.dll`, the Microsoft GDK runtime that Xbox PC games load, for use in Wine
-with [xTux](https://github.com/Tux-Force/xTux). Part of [Tux-Force](https://github.com/Tux-Force).
+with [xTux](https://github.com/Tux-Force/xTux). Part of [Tux-Force](https://github.com/Tux-Force); guides and
+the compatibility list are on the website, **https://tux-force.github.io**.
 
 This is a **soft fork of [xodus-gaming/xgameruntime](https://github.com/xodus-gaming/xgameruntime)**. Our `develop`
 and `main` branches build on upstream's C implementation (`upstream/legacy-c`) and are used as the
@@ -17,7 +18,7 @@ rewrite (`upstream/main`); moving our work
 onto that code base is planned, module by module.
 
 > [!CAUTION]
-> Unofficial community project, not affiliated with, endorsed by, or sponsored by Microsoft or XBOX. Written from
+> Unofficial community project, not affiliated with, endorsed by, or sponsored by Microsoft or Xbox. Written from
 > public GDK documentation and observed behaviour; it contains no Microsoft code.
 
 ## What this fork implements
@@ -35,7 +36,8 @@ onto that code base is planned, module by module.
 ## Talking to xTux
 
 `xtux-cli run` passes `XODUS_BRIDGE_PORT` and `XODUS_BRIDGE_SECRET`. `xodusbridge.c` sends plain text requests over
-WinHTTP to `127.0.0.1`; the protocol is documented in xTux (`crates/xtux-cli/src/commands/bridge.rs`). Account
+WinHTTP to `127.0.0.1`; the protocol is documented in xTux (`crates/xtux-games/src/bridge.rs`) and on the
+website ([architecture](https://tux-force.github.io/project/architecture/#the-game-bridge)). Account
 tokens never enter the game process, only the per-request results do.
 
 ## Building
