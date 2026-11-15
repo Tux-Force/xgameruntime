@@ -608,15 +608,6 @@ static HRESULT WINAPI async_run_provider( XAsyncOp op, const XAsyncProviderData 
     }
 }
 
-void *gdkc_async_context( XAsyncBlock *block )
-{
-    struct async_state *state = async_acquire( block );
-    void *context = state ? state->data.context : NULL;
-
-    if (state) async_release( state );
-    return context;
-}
-
 static HRESULT WINAPI x_threading_XAsyncGetStatus( IXThreadingImpl *iface, XAsyncBlock *asyncBlock, BOOLEAN wait )
 {
     struct async_state *state = async_acquire( asyncBlock );

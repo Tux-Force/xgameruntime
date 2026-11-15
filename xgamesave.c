@@ -20,6 +20,7 @@
  */
 
 #include "private.h"
+#include "wine/list.h"
 
 struct x_game_save
 {
@@ -606,6 +607,8 @@ enum request_kind
 
 struct request
 {
+    struct list entry;
+    XAsyncBlock *async;
     enum request_kind kind;
     HRESULT hr;
     SIZE_T required;
@@ -614,6 +617,41 @@ struct request
     struct blob *blobs;
     UINT32 count;
 };
+
+/* Requests in flight, so the *Result functions find theirs from the async block alone. */
+static struct list requests = LIST_INIT( requests );
+static CRITICAL_SECTION requests_cs;
+static CRITICAL_SECTION_DEBUG requests_cs_debug =
+{
+    0, 0, &requests_cs,
+    { &requests_cs_debug.ProcessLocksList, &requests_cs_debug.ProcessLocksList },
+      0, 0, { (DWORD_PTR)(__FILE__ ": requests_cs") }
+};
+static CRITICAL_SECTION requests_cs = { &requests_cs_debug, -1, 0, 0, 0, 0 };
+
+static struct request *request_find( XAsyncBlock *async )
+{
+    struct request *request, *found = NULL;
+
+    EnterCriticalSection( &requests_cs );
+    LIST_FOR_EACH_ENTRY( request, &requests, struct request, entry )
+    {
+        if (request->async != async) continue;
+        found = request;
+        break;
+    }
+    LeaveCriticalSection( &requests_cs );
+    return found;
+}
+
+static void request_free( struct request *request )
+{
+    EnterCriticalSection( &requests_cs );
+    if (request->async) list_remove( &request->entry );
+    LeaveCriticalSection( &requests_cs );
+    blobs_free( request->blobs, request->count );
+    HeapFree( GetProcessHeap(), 0, request );
+}
 
 static HRESULT WINAPI request_provider( XAsyncOp op, const XAsyncProviderData *data )
 {
@@ -636,8 +674,7 @@ static HRESULT WINAPI request_provider( XAsyncOp op, const XAsyncProviderData *d
             return S_OK;
 
         case XAsyncOp_Cleanup:
-            blobs_free( request->blobs, request->count );
-            HeapFree( GetProcessHeap(), 0, request );
+            request_free( request );
             return S_OK;
 
         default:
@@ -649,11 +686,13 @@ static HRESULT request_begin( XAsyncBlock *async, struct request *request, const
 {
     HRESULT hr;
 
+    EnterCriticalSection( &requests_cs );
+    request->async = async;
+    list_add_tail( &requests, &request->entry );
+    LeaveCriticalSection( &requests_cs );
+
     if (FAILED(hr = IXThreadingImpl_XAsyncBegin( x_threading_impl, async, request, identity, name, request_provider )))
-    {
-        blobs_free( request->blobs, request->count );
-        HeapFree( GetProcessHeap(), 0, request );
-    }
+        request_free( request );
     return hr;
 }
 
@@ -847,7 +886,7 @@ static HRESULT WINAPI x_game_save_XGameSaveReadBlobDataAsync( IXGameSaveImpl3 *i
 
 static HRESULT WINAPI x_game_save_XGameSaveReadBlobDataResult( IXGameSaveImpl3 *iface, XAsyncBlock *async, SIZE_T blobsSize, XGameSaveBlob *blobData, UINT32 *countOfBlobs )
 {
-    struct request *request = gdkc_async_context( async );
+    struct request *request = request_find( async );
     UINT32 count;
 
     TRACE( "iface %p, async %p, blobsSize %Iu, blobData %p, countOfBlobs %p.\n", iface, async, blobsSize, blobData, countOfBlobs );
