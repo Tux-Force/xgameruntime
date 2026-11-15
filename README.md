@@ -33,6 +33,12 @@ onto that code base is planned, module by module.
   URLs, preferred UDP port.
 - **XPackage / XGame:** identity from `MicrosoftGame.config` (title id, store id, package family name, MSA app id).
 
+## Generated code
+
+`tools/gdkgen.py` checks the C vtables against the IDL, generates stubs for new interface versions and the event
+registrations that can never fire under xTux, and reports which stubs games really hit. See
+[tools/README.md](tools/README.md).
+
 ## Talking to xTux
 
 `xtux-cli run` passes `XODUS_BRIDGE_PORT` and `XODUS_BRIDGE_SECRET`. `xodusbridge.c` sends plain text requests over
