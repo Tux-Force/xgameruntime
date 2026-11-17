@@ -28,6 +28,13 @@ int main(void)
     UINT32 count = 1;
     XGameSaveBlob *blob = (XGameSaveBlob *)buffer;
 
+    char temp[MAX_PATH], local[MAX_PATH];
+
+    /* Keep the saves out of the real profile: the storage path follows LOCALAPPDATA. */
+    if (!GetTempPathA(sizeof(temp), temp)) return 2;
+    snprintf(local, sizeof(local), "%sxgameruntime-gamesave-test-%lu", temp, GetCurrentProcessId());
+    CreateDirectoryA(local, NULL);
+    SetEnvironmentVariableA("LOCALAPPDATA", local);
     SetEnvironmentVariableA("XODUS_XUID", "123");
     dll = LoadLibraryA("xgameruntime.dll");
     if (!dll) { printf("LoadLibrary failed: %lu\n", GetLastError()); return 2; }

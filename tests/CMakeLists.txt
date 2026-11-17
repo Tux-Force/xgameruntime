@@ -87,8 +87,12 @@ add_dependencies(test_gamesave xgameruntime xgameruntime-idl)
 target_include_directories(test_gamesave PRIVATE ${PROJECT_SOURCE_DIR}/include ${IDL_BINARY_DIR})
 target_compile_definitions(test_gamesave PRIVATE __WINESRC__ COBJMACROS WIDL_C_INLINE_WRAPPERS)
 target_link_options(test_gamesave PRIVATE -static -static-libgcc)
-set_target_properties(test_gamesave PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
-configure_file(Modules/MicrosoftGame.config "${CMAKE_BINARY_DIR}/bin/MicrosoftGame.config" COPYONLY)
+# Own directory with its own MicrosoftGame.config and DLL copy, so the other tests keep running
+# without a title config.
+set_target_properties(test_gamesave PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/gamesave")
+configure_file(Modules/MicrosoftGame.config "${CMAKE_BINARY_DIR}/bin/gamesave/MicrosoftGame.config" COPYONLY)
+add_custom_command(TARGET test_gamesave POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:xgameruntime>" "$<TARGET_FILE_DIR:test_gamesave>/")
 if(CMAKE_CROSSCOMPILING)
     set_property(TARGET test_gamesave PROPERTY CROSSCOMPILING_EMULATOR "${WINE_EXECUTABLE}")
 endif()
@@ -100,6 +104,11 @@ target_include_directories(test_user_tokens PRIVATE ${PROJECT_SOURCE_DIR}/includ
 target_compile_definitions(test_user_tokens PRIVATE __WINESRC__ COBJMACROS WIDL_C_INLINE_WRAPPERS)
 target_link_options(test_user_tokens PRIVATE -static -static-libgcc)
 set_target_properties(test_user_tokens PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
-find_package(Python3 COMPONENTS Interpreter REQUIRED)
-add_test(NAME user_token_unicode COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/Modules/run_user_token_tests.py"
-    --wine "${WINE_EXECUTABLE}" --binary "$<TARGET_FILE:test_user_tokens>")
+# Needs Python for the fake bridge; without it the test is skipped. On Windows the binary runs
+# directly, when cross compiling through Wine.
+find_package(Python3 COMPONENTS Interpreter)
+if(Python3_FOUND)
+    add_test(NAME user_token_unicode COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/Modules/run_user_token_tests.py"
+        --wine "${WINE_EXECUTABLE}" --binary "$<TARGET_FILE:test_user_tokens>"
+        --dll "$<TARGET_FILE:xgameruntime>")
+endif()

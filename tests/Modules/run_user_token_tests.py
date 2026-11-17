@@ -12,13 +12,18 @@ import threading
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--wine', required=True)
+    parser.add_argument('--wine', default='', help='Wine launcher; empty runs the binary directly (Windows)')
     parser.add_argument('--binary', required=True)
     parser.add_argument('--dll')
     args = parser.parse_args()
-    wine = Path(args.wine).resolve()
-    # The build-tree wine launcher is a symlink; keep its original parent for wineserver.
-    server = Path(args.wine).absolute().parent / 'server/wineserver'
+    wine = Path(args.wine).resolve() if args.wine else None
+    server = None
+    if wine:
+        # The build-tree wine launcher is a symlink; keep its original parent for wineserver.
+        server = Path(args.wine).absolute().parent / 'server/wineserver'
+        if not server.exists():
+            found = shutil.which('wineserver', path=str(wine.parent)) or shutil.which('wineserver')
+            server = Path(found) if found else None
     binary = Path(args.binary).resolve()
     dll = Path(args.dll).resolve() if args.dll else binary.parent / 'xgameruntime.dll'
     requests = []
@@ -71,7 +76,8 @@ def main():
                        XODUS_BRIDGE_SECRET='xtux-test-secret')
             env.pop('WINE_DLL_FILE_MAP', None)
             try:
-                result = subprocess.run([str(wine), str(work / binary.name)], cwd=work, env=env,
+                command = ([str(wine)] if wine else []) + [str(work / binary.name)]
+                result = subprocess.run(command, cwd=work, env=env,
                                         capture_output=True, text=True, timeout=90)
                 print(result.stdout, end='')
                 if result.returncode:
@@ -85,7 +91,7 @@ def main():
             finally:
                 bridge.shutdown()
                 thread.join(timeout=5)
-                if server.exists():
+                if server and server.exists():
                     subprocess.run([str(server), '-k'], env=env, capture_output=True, timeout=10)
                     subprocess.run([str(server), '-w'], env=env, capture_output=True, timeout=10)
     return 0

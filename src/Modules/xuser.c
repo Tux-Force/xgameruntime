@@ -109,7 +109,8 @@ static HRESULT WINAPI user_add_provider( XAsyncOp op, const XAsyncProviderData *
 /*
  * Xbox Live token requests. The Xodus bridge looks up the relying party of the URL and answers
  * the Authorization header for it; URLs that need no token get an empty one, like on Windows.
- * The bridge returns both authorization and any required request signature.
+ * The bridge returns the Authorization header and the request signature; request headers are not
+ * sent to it, so a signature that has to cover headers is not supported.
  */
 struct token_request
 {

@@ -664,7 +664,8 @@ static HRESULT WINAPI request_provider( XAsyncOp op, const XAsyncProviderData *d
             return S_OK;
 
         case XAsyncOp_GetResult:
-            if (data->bufferSize < request->required) return E_GS_PROVIDED_BUFFER_TOO_SMALL;
+            if (data->bufferSize < request->required)
+                return request->kind == REQUEST_READ ? E_GS_PROVIDED_BUFFER_TOO_SMALL : HRESULT_FROM_WIN32( ERROR_INSUFFICIENT_BUFFER );
             if (request->kind == REQUEST_INIT) *(struct XGameSaveProvider **)data->buffer = request->provider;
             else if (request->kind == REQUEST_QUOTA) *(INT64 *)data->buffer = request->quota;
             else if (request->kind == REQUEST_READ) blobs_copy( request->blobs, request->count, data->buffer );
