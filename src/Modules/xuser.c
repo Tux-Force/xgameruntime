@@ -109,13 +109,17 @@ static HRESULT WINAPI user_add_provider( XAsyncOp op, const XAsyncProviderData *
 /*
  * Xbox Live token requests. The Xodus bridge looks up the relying party of the URL and answers
  * the Authorization header for it; URLs that need no token get an empty one, like on Windows.
- * Requests that need a signature are answered without one.
+ * The bridge returns the Authorization header and the request signature; request headers are not
+ * sent to it, so a signature that has to cover headers is not supported.
  */
 struct token_request
 {
     char *body;
     char *token;            /* bridge answer; split into token and signature */
     const char *signature;
+    BOOL utf16;
+    int token_count, signature_count; /* UTF-16 code units, including terminators */
+    SIZE_T result_size;
 };
 
 static char *base64_encode( const UINT8 *data, SIZE_T size )
@@ -178,8 +182,21 @@ static HRESULT WINAPI token_provider( XAsyncOp op, const XAsyncProviderData *dat
                     request->signature = newline + 1;
                 }
             }
-            IXThreadingImpl_XAsyncComplete( x_threading_impl, data->async, hr,
-                                            SUCCEEDED(hr) ? sizeof(*result) + strlen( request->token ) + strlen( request->signature ) + 2 : 0 );
+            if (SUCCEEDED(hr))
+            {
+                if (request->utf16)
+                {
+                    request->token_count = MultiByteToWideChar( CP_UTF8, MB_ERR_INVALID_CHARS, request->token, -1, NULL, 0 );
+                    request->signature_count = MultiByteToWideChar( CP_UTF8, MB_ERR_INVALID_CHARS, request->signature, -1, NULL, 0 );
+                    if (!request->token_count || !request->signature_count)
+                        hr = HRESULT_FROM_WIN32( ERROR_NO_UNICODE_TRANSLATION );
+                    else
+                        request->result_size = sizeof(XUserGetTokenAndSignatureUtf16Data) +
+                            ((SIZE_T)request->token_count + request->signature_count) * sizeof(WCHAR);
+                }
+                else request->result_size = sizeof(*result) + strlen( request->token ) + strlen( request->signature ) + 2;
+            }
+            IXThreadingImpl_XAsyncComplete( x_threading_impl, data->async, hr, SUCCEEDED(hr) ? request->result_size : 0 );
             return S_OK;
         }
 
@@ -187,6 +204,20 @@ static HRESULT WINAPI token_provider( XAsyncOp op, const XAsyncProviderData *dat
         {
             SIZE_T signature_size = strlen( request->signature ) + 1;
 
+            if (data->bufferSize < request->result_size) return HRESULT_FROM_WIN32( ERROR_INSUFFICIENT_BUFFER );
+            if (request->utf16)
+            {
+                XUserGetTokenAndSignatureUtf16Data *wide = data->buffer;
+                WCHAR *token = (WCHAR *)(wide + 1), *signature = token + request->token_count;
+                if (!MultiByteToWideChar( CP_UTF8, MB_ERR_INVALID_CHARS, request->token, -1, token, request->token_count ) ||
+                    !MultiByteToWideChar( CP_UTF8, MB_ERR_INVALID_CHARS, request->signature, -1, signature, request->signature_count ))
+                    return HRESULT_FROM_WIN32( ERROR_NO_UNICODE_TRANSLATION );
+                wide->token = token;
+                wide->signature = signature;
+                wide->tokenCount = request->token_count - 1;
+                wide->signatureCount = request->signature_count - 1;
+                return S_OK;
+            }
             token_size = strlen( request->token ) + 1;
             if (data->bufferSize < sizeof(*result) + token_size + signature_size) return HRESULT_FROM_WIN32( ERROR_INSUFFICIENT_BUFFER );
             result = data->buffer;
@@ -427,7 +458,7 @@ static HRESULT WINAPI x_user_XUserResolvePrivilegeWithUiResult( IXUserImpl6 *ifa
     return E_NOTIMPL;
 }
 
-static HRESULT WINAPI x_user_XUserGetTokenAndSignatureAsync( IXUserImpl6 *iface, XUserHandle user, XUserGetTokenAndSignatureOptions options, const char *method, const char *url, SIZE_T headerCount, const XUserGetTokenAndSignatureHttpHeader *headers, SIZE_T bodySize, const void *bodyBuffer, XAsyncBlock *async )
+static HRESULT begin_token_request( XUserHandle user, XUserGetTokenAndSignatureOptions options, const char *method, const char *url, SIZE_T bodySize, const void *bodyBuffer, XAsyncBlock *async, BOOL utf16, const void *identity )
 {
     struct token_request *request;
     char msa_app_id[64] = "", *body64;
@@ -435,14 +466,13 @@ static HRESULT WINAPI x_user_XUserGetTokenAndSignatureAsync( IXUserImpl6 *iface,
     SIZE_T len;
     HRESULT hr;
 
-    TRACE( "iface %p, user %p, options %d, method %s, url %s, headerCount %Iu, headers %p, bodySize %Iu, bodyBuffer %p, async %p.\n", iface, user, options, debugstr_a( method ), debugstr_a( url ), headerCount, headers, bodySize, bodyBuffer, async );
-
-    if (!user || !async || !method || !url) return E_INVALIDARG;
+    if (!user || !async || !method || !url || (bodySize && !bodyBuffer)) return E_INVALIDARG;
     if (strpbrk( method, "\r\n" ) || strpbrk( url, "\r\n" )) return E_INVALIDARG;
     /* Without Xodus there is nobody to ask for a token: behave like an unsupported service. */
     if (!gdkc_bridge_available()) return E_NOTIMPL;
 
     if (!(request = calloc( 1, sizeof(*request) ))) return E_OUTOFMEMORY;
+    request->utf16 = utf16;
     if (!gdkc_config_get_title_id( &title_id )) title_id = 0;
     gdkc_config_get_msa_app_id( msa_app_id, sizeof(msa_app_id) );
     if (strpbrk( msa_app_id, "\r\n" )) msa_app_id[0] = 0;
@@ -462,12 +492,19 @@ static HRESULT WINAPI x_user_XUserGetTokenAndSignatureAsync( IXUserImpl6 *iface,
     sprintf( request->body, "%s\n%s\n%d\n%u\n%s\n%s", method, url, (options & XUserGetTokenAndSignatureOptions_ForceRefresh) ? 1 : 0, title_id, msa_app_id, body64 );
     free( body64 );
 
-    if (FAILED(hr = IXThreadingImpl_XAsyncBegin( x_threading_impl, async, request, x_user_XUserGetTokenAndSignatureAsync, "XUserGetTokenAndSignatureAsync", token_provider )))
+    if (FAILED(hr = IXThreadingImpl_XAsyncBegin( x_threading_impl, async, request, identity, utf16 ? "XUserGetTokenAndSignatureUtf16Async" : "XUserGetTokenAndSignatureAsync", token_provider )))
     {
         free( request->body );
         free( request );
     }
     return hr;
+}
+
+static HRESULT WINAPI x_user_XUserGetTokenAndSignatureAsync( IXUserImpl6 *iface, XUserHandle user, XUserGetTokenAndSignatureOptions options, const char *method, const char *url, SIZE_T headerCount, const XUserGetTokenAndSignatureHttpHeader *headers, SIZE_T bodySize, const void *bodyBuffer, XAsyncBlock *async )
+{
+    TRACE( "user %p, method %s, url %s, async %p.\n", user, debugstr_a(method), debugstr_a(url), async );
+    if (headerCount && !headers) return E_INVALIDARG;
+    return begin_token_request( user, options, method, url, bodySize, bodyBuffer, async, FALSE, x_user_XUserGetTokenAndSignatureAsync );
 }
 
 static HRESULT WINAPI x_user_XUserGetTokenAndSignatureResultSize( IXUserImpl6 *iface, XAsyncBlock *async, SIZE_T *bufferSize )
@@ -492,20 +529,43 @@ static HRESULT WINAPI x_user_XUserGetTokenAndSignatureResult( IXUserImpl6 *iface
 
 static HRESULT WINAPI x_user_XUserGetTokenAndSignatureUtf16Async( IXUserImpl6 *iface, XUserHandle user, XUserGetTokenAndSignatureOptions options, const WCHAR *method, const WCHAR *url, SIZE_T headerCount, const XUserGetTokenAndSignatureUtf16HttpHeader *headers, SIZE_T bodySize, const void *bodyBuffer, XAsyncBlock *async )
 {
-    FIXME( "iface %p, user %p, options %d, method %s, url %s, headerCount %Iu, headers %p, bodySize %Iu, bodyBuffer %p, async %p stub!\n", iface, user, options, debugstr_w( method ), debugstr_w( url ), headerCount, headers, bodySize, bodyBuffer, async );
-    return E_NOTIMPL;
+    char *method8, *url8;
+    int method_size, url_size;
+    HRESULT hr;
+
+    TRACE( "user %p, method %s, url %s, async %p.\n", user, debugstr_w(method), debugstr_w(url), async );
+    if (!method || !url || (headerCount && !headers)) return E_INVALIDARG;
+    method_size = WideCharToMultiByte( CP_UTF8, WC_ERR_INVALID_CHARS, method, -1, NULL, 0, NULL, NULL );
+    url_size = WideCharToMultiByte( CP_UTF8, WC_ERR_INVALID_CHARS, url, -1, NULL, 0, NULL, NULL );
+    if (!method_size || !url_size) return HRESULT_FROM_WIN32( ERROR_NO_UNICODE_TRANSLATION );
+    if (!(method8 = malloc(method_size))) return E_OUTOFMEMORY;
+    if (!(url8 = malloc(url_size))) { free(method8); return E_OUTOFMEMORY; }
+    WideCharToMultiByte( CP_UTF8, WC_ERR_INVALID_CHARS, method, -1, method8, method_size, NULL, NULL );
+    WideCharToMultiByte( CP_UTF8, WC_ERR_INVALID_CHARS, url, -1, url8, url_size, NULL, NULL );
+    hr = begin_token_request( user, options, method8, url8, bodySize, bodyBuffer, async, TRUE, x_user_XUserGetTokenAndSignatureUtf16Async );
+    free(method8);
+    free(url8);
+    return hr;
 }
 
 static HRESULT WINAPI x_user_XUserGetTokenAndSignatureUtf16ResultSize( IXUserImpl6 *iface, XAsyncBlock *async, SIZE_T *bufferSize )
 {
-    FIXME( "iface %p, async %p, bufferSize %p stub!\n", iface, async, bufferSize );
-    return E_NOTIMPL;
+    if (!async || !bufferSize) return E_INVALIDARG;
+    return IXThreadingImpl_XAsyncGetResultSize( x_threading_impl, async, bufferSize );
 }
 
 static HRESULT WINAPI x_user_XUserGetTokenAndSignatureUtf16Result( IXUserImpl6 *iface, XAsyncBlock *async, SIZE_T bufferSize, void *buffer, XUserGetTokenAndSignatureUtf16Data **ptrToBuffer, SIZE_T *bufferUsed )
 {
-    FIXME( "iface %p, async %p, bufferSize %Iu, buffer %p, ptrToBuffer %p, bufferUsed %p stub!\n", iface, async, bufferSize, buffer, ptrToBuffer, bufferUsed );
-    return E_NOTIMPL;
+    HRESULT hr;
+    SIZE_T required;
+
+    if (ptrToBuffer) *ptrToBuffer = NULL;
+    if (!async || !buffer) return E_INVALIDARG;
+    if (FAILED(hr = IXThreadingImpl_XAsyncGetResultSize( x_threading_impl, async, &required ))) return hr;
+    if (bufferSize < required) return HRESULT_FROM_WIN32( ERROR_INSUFFICIENT_BUFFER );
+    hr = IXThreadingImpl_XAsyncGetResult( x_threading_impl, async, x_user_XUserGetTokenAndSignatureUtf16Async, bufferSize, buffer, bufferUsed );
+    if (SUCCEEDED(hr) && ptrToBuffer) *ptrToBuffer = buffer;
+    return hr;
 }
 
 static HRESULT WINAPI x_user_XUserResolveIssueWithUiAsync( IXUserImpl6 *iface, XUserHandle user, const char *url, XAsyncBlock *async )

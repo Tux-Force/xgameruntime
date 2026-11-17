@@ -21,6 +21,9 @@
 
 #include <specstrings.h>
 
+#define E_GS_PROVIDED_BUFFER_TOO_SMALL                            _HRESULT_TYPEDEF_(0x80830007L)
+#define E_GS_BLOB_NOT_FOUND                                       _HRESULT_TYPEDEF_(0x80830008L)
+
 #define E_GAME_MISSING_GAME_CONFIG                                  _HRESULT_TYPEDEF_(0x87E5001FL)
 #define E_GAMERUNTIME_NOT_INITIALIZED                               _HRESULT_TYPEDEF_(0x89240100L)
 #define E_GAMERUNTIME_DLL_NOT_FOUND                                 _HRESULT_TYPEDEF_(0x89240101L)
