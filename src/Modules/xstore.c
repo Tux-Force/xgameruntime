@@ -301,6 +301,25 @@ static BOOL is_license_verified(void)
     return len && len < sizeof(value) && value[0] == '1';
 }
 
+/*
+ * A SKU store id is "<product store id>/<sku id>", e.g. "9P38D19T7LRV/0010". Games compare the whole string
+ * (Microsoft Flight Simulator 2024 treats a bare product id as a failed license check). The launcher can pass
+ * the owned SKU in XODUS_LICENSE_SKU; without it the standard full game SKU 0010 is reported.
+ */
+static void get_sku_store_id( char *out, SIZE_T size )
+{
+    char product[13], sku[8];
+    DWORD len = GetEnvironmentVariableA( "XODUS_LICENSE_SKU", sku, sizeof(sku) );
+    DWORD i;
+
+    out[0] = 0;
+    if (!gdkc_config_get_store_id( product, sizeof(product) )) return;
+    for (i = 0; i < len && len == 4; i++)
+        if (!((sku[i] >= '0' && sku[i] <= '9') || (sku[i] >= 'A' && sku[i] <= 'Z'))) break;
+    if (len != 4 || i != len) strcpy( sku, "0010" );
+    snprintf( out, size, "%s/%s", product, sku );
+}
+
 static HRESULT WINAPI game_license_provider( XAsyncOp op, const XAsyncProviderData *data )
 {
     XStoreGameLicense *license;
@@ -318,7 +337,7 @@ static HRESULT WINAPI game_license_provider( XAsyncOp op, const XAsyncProviderDa
             if (data->bufferSize < sizeof(*license)) return HRESULT_FROM_WIN32( ERROR_INSUFFICIENT_BUFFER );
             license = data->buffer;
             memset( license, 0, sizeof(*license) );
-            gdkc_config_get_store_id( license->skuStoreId, sizeof(license->skuStoreId) );
+            get_sku_store_id( license->skuStoreId, sizeof(license->skuStoreId) );
             license->isActive = is_license_verified();
             return S_OK;
 
