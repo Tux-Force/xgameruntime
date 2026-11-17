@@ -445,7 +445,7 @@ static HRESULT blobs_load( const struct XGameSaveContainer *container, const cha
             blobs_free( blobs, i );
             for (i = 0; all.names && i < all.count; i++) HeapFree( GetProcessHeap(), 0, all.names[i] );
             HeapFree( GetProcessHeap(), 0, all.names );
-            return HRESULT_FROM_WIN32( ERROR_FILE_NOT_FOUND );
+            return E_GS_BLOB_NOT_FOUND;
         }
         blobs[i].name = HeapAlloc( GetProcessHeap(), 0, strlen( names[i] ) + 1 );
         strcpy( blobs[i].name, names[i] );
@@ -664,7 +664,7 @@ static HRESULT WINAPI request_provider( XAsyncOp op, const XAsyncProviderData *d
             return S_OK;
 
         case XAsyncOp_GetResult:
-            if (data->bufferSize < request->required) return HRESULT_FROM_WIN32( ERROR_INSUFFICIENT_BUFFER );
+            if (data->bufferSize < request->required) return E_GS_PROVIDED_BUFFER_TOO_SMALL;
             if (request->kind == REQUEST_INIT) *(struct XGameSaveProvider **)data->buffer = request->provider;
             else if (request->kind == REQUEST_QUOTA) *(INT64 *)data->buffer = request->quota;
             else if (request->kind == REQUEST_READ) blobs_copy( request->blobs, request->count, data->buffer );
@@ -865,7 +865,7 @@ static HRESULT WINAPI x_game_save_XGameSaveReadBlobData( IXGameSaveImpl3 *iface,
     if (FAILED(hr = blobs_load( container, blobNames, blobNames ? *countOfBlobs : 0, &blobs, &count, &required ))) return hr;
 
     if (!blobData || blobsSize < required)
-        hr = HRESULT_FROM_WIN32( ERROR_INSUFFICIENT_BUFFER );
+        hr = E_GS_PROVIDED_BUFFER_TOO_SMALL;
     else
         blobs_copy( blobs, count, blobData );
 
