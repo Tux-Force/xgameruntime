@@ -112,3 +112,15 @@ if(Python3_FOUND)
         --wine "${WINE_EXECUTABLE}" --binary "$<TARGET_FILE:test_user_tokens>"
         --dll "$<TARGET_FILE:xgameruntime>")
 endif()
+
+add_executable(test_addons Modules/test_addons.c)
+add_dependencies(test_addons xgameruntime xgameruntime-idl)
+target_include_directories(test_addons PRIVATE ${PROJECT_SOURCE_DIR}/include ${IDL_BINARY_DIR})
+target_compile_definitions(test_addons PRIVATE __WINESRC__ COBJMACROS WIDL_C_INLINE_WRAPPERS)
+target_link_options(test_addons PRIVATE -static -static-libgcc)
+set_target_properties(test_addons PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+if(Python3_FOUND)
+    add_test(NAME addons_dlc COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/Modules/run_addon_tests.py"
+        --wine "${WINE_EXECUTABLE}" --binary "$<TARGET_FILE:test_addons>"
+        --dll "$<TARGET_FILE:xgameruntime>")
+endif()

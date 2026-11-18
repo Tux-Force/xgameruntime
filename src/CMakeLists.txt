@@ -43,6 +43,7 @@ target_sources(xgameruntime-impl PRIVATE
         Modules/xsystem.c
         Modules/xuser.c
         Modules/xodusbridge.c
+        Modules/xodusaddons.c
         Modules/xgameconfig.c
         Modules/modules_dispatch.c )
 target_link_libraries( xgameruntime-impl PRIVATE runtimeobject bcrypt winhttp )
