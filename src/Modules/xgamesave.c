@@ -35,6 +35,8 @@ static inline struct x_game_save *impl_from_IXGameSaveImpl3( IXGameSaveImpl3 *if
     return CONTAINING_RECORD( iface, struct x_game_save, IXGameSaveImpl3_iface );
 }
 
+static const GUID IID_IXGameSaveImpl4_unknown = {0xab4ae4fb, 0x6508, 0x4950, {0xa0, 0x32, 0x45, 0xfd, 0x4b, 0xf8, 0xc4, 0x3b}};
+
 static HRESULT WINAPI x_game_save_QueryInterface( IXGameSaveImpl3 *iface, REFIID iid, void **out )
 {
     struct x_game_save *impl = impl_from_IXGameSaveImpl3( iface );
@@ -44,7 +46,8 @@ static HRESULT WINAPI x_game_save_QueryInterface( IXGameSaveImpl3 *iface, REFIID
     if (IsEqualGUID( iid, &IID_IUnknown        ) ||
         IsEqualGUID( iid, &IID_IXGameSaveImpl  ) ||
         IsEqualGUID( iid, &IID_IXGameSaveImpl2 ) ||
-        IsEqualGUID( iid, &IID_IXGameSaveImpl3 ))
+        IsEqualGUID( iid, &IID_IXGameSaveImpl3 ) ||
+        IsEqualGUID( iid, &IID_IXGameSaveImpl4_unknown ))
     {
         IXGameSaveImpl_AddRef( *out = &impl->IXGameSaveImpl3_iface );
         return S_OK;
@@ -981,7 +984,30 @@ static HRESULT WINAPI x_game_save_XGameSaveFilesGetRemainingQuota( IXGameSaveImp
     return S_OK;
 }
 
-static const struct IXGameSaveImpl3Vtbl x_game_save_vtbl =
+/* Newer GDKs (DayZ, gdkVer 10006) ask for {ab4ae4fb-6508-4950-a032-45fd4bf8c43b}, an interface that extends
+ * IXGameSaveImpl3 with methods we do not know yet. Answer it with this object and log any call to the
+ * unknown methods, so games that only probe for it keep working. */
+#define UNKNOWN_GAMESAVE_METHOD(n) \
+    static HRESULT WINAPI x_game_save_unknown_##n( IXGameSaveImpl3 *iface ) \
+    { \
+        FIXME( "iface %p unknown IXGameSaveImpl4 method %d called, returning E_NOTIMPL.\n", iface, n ); \
+        return E_NOTIMPL; \
+    }
+UNKNOWN_GAMESAVE_METHOD(0)
+UNKNOWN_GAMESAVE_METHOD(1)
+UNKNOWN_GAMESAVE_METHOD(2)
+UNKNOWN_GAMESAVE_METHOD(3)
+UNKNOWN_GAMESAVE_METHOD(4)
+UNKNOWN_GAMESAVE_METHOD(5)
+UNKNOWN_GAMESAVE_METHOD(6)
+UNKNOWN_GAMESAVE_METHOD(7)
+
+static const struct
+{
+    struct IXGameSaveImpl3Vtbl base;
+    HRESULT (WINAPI *unknown[8])( IXGameSaveImpl3 *iface );
+} x_game_save_vtbl =
+{
 {
     x_game_save_QueryInterface,
     x_game_save_AddRef,
@@ -1018,11 +1044,16 @@ static const struct IXGameSaveImpl3Vtbl x_game_save_vtbl =
     x_game_save_XGameSaveFilesGetFolderWithUiAsync,
     x_game_save_XGameSaveFilesGetFolderWithUiResult,
     x_game_save_XGameSaveFilesGetRemainingQuota,
+},
+{
+    x_game_save_unknown_0, x_game_save_unknown_1, x_game_save_unknown_2, x_game_save_unknown_3,
+    x_game_save_unknown_4, x_game_save_unknown_5, x_game_save_unknown_6, x_game_save_unknown_7,
+}
 };
 
 static struct x_game_save x_game_save =
 {
-    {&x_game_save_vtbl},
+    {&x_game_save_vtbl.base},
     0,
 };
 
