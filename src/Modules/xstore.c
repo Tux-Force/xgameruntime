@@ -21,6 +21,8 @@
 
 #include "private.h"
 
+#include <ctype.h>
+
 WINE_DEFAULT_DEBUG_CHANNEL(gdkc);
 
 struct x_store
@@ -568,16 +570,69 @@ static HRESULT WINAPI __PADDING_3__( IXStoreImpl6 *iface )
     return E_NOTIMPL;
 }
 
+/* Store dialogs have no Linux counterpart: open the product page in the host browser instead and
+ * report the dialog as closed. Games treat a failing call here as fatal (Planet Coaster 2). */
+static void open_store_page( const char *storeId )
+{
+    char cmd[160];
+    STARTUPINFOA si = { sizeof(si) };
+    PROCESS_INFORMATION pi;
+    const char *c;
+
+    if (!storeId || !*storeId || strlen( storeId ) > 32) return;
+    for (c = storeId; *c; c++) if (!isalnum( (unsigned char)*c )) return;
+
+    sprintf( cmd, "winebrowser.exe https://www.microsoft.com/store/productId/%s", storeId );
+    if (!CreateProcessA( NULL, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi ))
+    {
+        WARN( "could not start winebrowser, error %lu.\n", GetLastError() );
+        return;
+    }
+    CloseHandle( pi.hThread );
+    CloseHandle( pi.hProcess );
+}
+
+static HRESULT WINAPI store_ui_provider( XAsyncOp op, const XAsyncProviderData *data )
+{
+    char *storeId = data->context;
+
+    switch (op)
+    {
+        case XAsyncOp_Begin:
+            return IXThreadingImpl_XAsyncSchedule( x_threading_impl, data->async, 0 );
+        case XAsyncOp_DoWork:
+            open_store_page( storeId );
+            IXThreadingImpl_XAsyncComplete( x_threading_impl, data->async, S_OK, 0 );
+            return S_OK;
+        case XAsyncOp_Cleanup:
+            free( storeId );
+            return S_OK;
+        default:
+            return S_OK;
+    }
+}
+
+static HRESULT begin_store_ui( XAsyncBlock *async, const char *storeId, const void *identity, const char *name )
+{
+    char *copy = NULL;
+    HRESULT hr;
+
+    if (!async) return E_INVALIDARG;
+    if (storeId && !(copy = strdup( storeId ))) return E_OUTOFMEMORY;
+    if (FAILED(hr = IXThreadingImpl_XAsyncBegin( x_threading_impl, async, copy, identity, name, store_ui_provider ))) free( copy );
+    return hr;
+}
+
 static HRESULT WINAPI x_store_XStoreShowPurchaseUIAsync( IXStoreImpl6 *iface, const XStoreContextHandle storeContextHandle, const char *storeId, const char *name, const char *extendedJsonData, XAsyncBlock *async )
 {
-    FIXME( "iface %p, storeContextHandle %p, storeId %s, name %s, extendedJsonData %s, async %p stub!\n", iface, storeContextHandle, debugstr_a( storeId ), debugstr_a( name ), debugstr_a( extendedJsonData ), async );
-    return E_NOTIMPL;
+    TRACE( "iface %p, storeContextHandle %p, storeId %s, name %s, extendedJsonData %s, async %p.\n", iface, storeContextHandle, debugstr_a( storeId ), debugstr_a( name ), debugstr_a( extendedJsonData ), async );
+    return begin_store_ui( async, storeId, x_store_XStoreShowPurchaseUIAsync, "XStoreShowPurchaseUIAsync" );
 }
 
 static HRESULT WINAPI x_store_XStoreShowPurchaseUIResult( IXStoreImpl6 *iface, XAsyncBlock *async )
 {
-    FIXME( "iface %p, async %p stub!\n", iface, async );
-    return E_NOTIMPL;
+    TRACE( "iface %p, async %p.\n", iface, async );
+    return IXThreadingImpl_XAsyncGetResult( x_threading_impl, async, x_store_XStoreShowPurchaseUIAsync, 0, NULL, NULL );
 }
 
 static HRESULT WINAPI x_store_XStoreShowRateAndReviewUIAsync( IXStoreImpl6 *iface, const XStoreContextHandle storeContextHandle, XAsyncBlock *async )
@@ -752,26 +807,26 @@ static HRESULT WINAPI x_store_XStoreAcquireLicenseForDurablesResult( IXStoreImpl
 
 static HRESULT WINAPI x_store_XStoreShowAssociatedProductsUIAsync( IXStoreImpl6 *iface, const XStoreContextHandle storeContextHandle, const char *storeId, XStoreProductKind productKinds, XAsyncBlock *async )
 {
-    FIXME( "iface %p, storeContextHandle %p, storeId %s, productKinds %#x, async %p stub!\n", iface, storeContextHandle, debugstr_a( storeId ), productKinds, async );
-    return E_NOTIMPL;
+    TRACE( "iface %p, storeContextHandle %p, storeId %s, productKinds %#x, async %p.\n", iface, storeContextHandle, debugstr_a( storeId ), productKinds, async );
+    return begin_store_ui( async, storeId, x_store_XStoreShowAssociatedProductsUIAsync, "XStoreShowAssociatedProductsUIAsync" );
 }
 
 static HRESULT WINAPI x_store_XStoreShowAssociatedProductsUIResult( IXStoreImpl6 *iface, XAsyncBlock *async )
 {
-    FIXME( "iface %p, async %p stub!\n", iface, async );
-    return E_NOTIMPL;
+    TRACE( "iface %p, async %p.\n", iface, async );
+    return IXThreadingImpl_XAsyncGetResult( x_threading_impl, async, x_store_XStoreShowAssociatedProductsUIAsync, 0, NULL, NULL );
 }
 
 static HRESULT WINAPI x_store_XStoreShowProductPageUIAsync( IXStoreImpl6 *iface, const XStoreContextHandle storeContextHandle, const char *storeId, XAsyncBlock *async )
 {
-    FIXME( "iface %p, storeContextHandle %p, storeId %s, async %p stub!\n", iface, storeContextHandle, debugstr_a( storeId ), async );
-    return E_NOTIMPL;
+    TRACE( "iface %p, storeContextHandle %p, storeId %s, async %p.\n", iface, storeContextHandle, debugstr_a( storeId ), async );
+    return begin_store_ui( async, storeId, x_store_XStoreShowProductPageUIAsync, "XStoreShowProductPageUIAsync" );
 }
 
 static HRESULT WINAPI x_store_XStoreShowProductPageUIResult( IXStoreImpl6 *iface, XAsyncBlock *async )
 {
-    FIXME( "iface %p, async %p stub!\n", iface, async );
-    return E_NOTIMPL;
+    TRACE( "iface %p, async %p.\n", iface, async );
+    return IXThreadingImpl_XAsyncGetResult( x_threading_impl, async, x_store_XStoreShowProductPageUIAsync, 0, NULL, NULL );
 }
 
 static HRESULT WINAPI x_store_XStoreQueryAssociatedProductsForStoreIdAsync( IXStoreImpl6 *iface, const XStoreContextHandle storeContextHandle, const char *storeId, XStoreProductKind productKinds, UINT32 maxItemsToRetrievePerPage, XAsyncBlock *async )
