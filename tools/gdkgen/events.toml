@@ -34,19 +34,6 @@ unregister = "XGameActivationUnregisterForEvent"
 reason = "Activation events are raised by the Windows shell when a running game is activated again. xTux starts games once and never re-activates them, so the callback is never invoked."
 
 [[never_fires]]
-register = "XPackageRegisterPackageInstalled"
-unregister = "XPackageUnregisterPackageInstalled"
-reason = "xTux has no add-on (DLC) installs yet; its download queue only installs whole games, each into its own folder. So no package of the running game is installed during a run and the callback is never invoked. Replace this with a real implementation once xTux installs add-ons."
-
-[[never_fires]]
-register = "XPackageRegisterPackageInstalled2"
-reason = "xTux has no add-on (DLC) installs yet; its download queue only installs whole games, each into its own folder. So no package of the running game is installed during a run and the callback is never invoked. Replace this with a real implementation once xTux installs add-ons."
-
-[[never_fires]]
-register = "XPackageRegisterPackageInstalled3"
-reason = "xTux has no add-on (DLC) installs yet; its download queue only installs whole games, each into its own folder. So no package of the running game is installed during a run and the callback is never invoked. Replace this with a real implementation once xTux installs add-ons."
-
-[[never_fires]]
 register = "XGameStreamingRegisterConnectionStateChanged"
 unregister = "XGameStreamingUnregisterConnectionStateChanged"
 reason = "Xbox cloud and console streaming clients cannot connect to a game under xTux, so the streaming connection state never changes and the callback is never invoked."

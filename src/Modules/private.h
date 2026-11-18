@@ -108,3 +108,39 @@ BOOL gdkc_config_get_msa_app_id( char *out, SIZE_T size );
 HRESULT gdkc_get_storage_path( char *out, SIZE_T size, SIZE_T *used );
 BOOL gdkc_bridge_available(void);
 HRESULT gdkc_bridge_post( const WCHAR *path, const char *body, char **response );
+
+/* Installed add-ons (DLC) of the running game, see xodusaddons.c. */
+#define GDKC_PACKAGE_ID_SIZE 33
+#define GDKC_STORE_ID_SIZE 16
+
+struct gdkc_addon
+{
+    char package_id[GDKC_PACKAGE_ID_SIZE]; /* what games see: 32 lower case hex digits */
+    char content_id[40];                   /* the form the bridge uses */
+    char store_id[GDKC_STORE_ID_SIZE];
+    XVersion version;
+    char *path;                            /* Windows path of the files */
+    char *name;
+    char *publisher;
+};
+
+struct gdkc_addons
+{
+    LONG ref;
+    char generation[32];
+    UINT32 count;
+    struct gdkc_addon *items;
+};
+
+BOOL gdkc_normalize_package_id( const char *id, char out[GDKC_PACKAGE_ID_SIZE] );
+BOOL gdkc_game_package_id( char out[GDKC_PACKAGE_ID_SIZE] );
+HRESULT gdkc_addons_get( struct gdkc_addons **addons );
+void gdkc_addons_release( struct gdkc_addons *addons );
+const struct gdkc_addon *gdkc_addons_find( const struct gdkc_addons *addons, const char *id );
+HRESULT gdkc_addon_license( const struct gdkc_addon *addon, BOOL *licensed );
+void gdkc_addon_get_details( const struct gdkc_addon *addon, UINT32 index, UINT32 count, XPackageDetails *details );
+HRESULT gdkc_addons_register_installed( XTaskQueueHandle queue, void *context, XPackageInstalledCallback *callback, XTaskQueueRegistrationToken *token );
+BOOLEAN gdkc_addons_unregister_installed( XTaskQueueRegistrationToken token );
+BOOL gdkc_config_get_version( XVersion *version );
+BOOL gdkc_config_get_display_name( char *out, SIZE_T size );
+BOOL gdkc_config_get_publisher_display_name( char *out, SIZE_T size );

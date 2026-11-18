@@ -203,3 +203,34 @@ BOOL gdkc_config_get_msa_app_id( char *out, SIZE_T size )
 {
     return config_get_tag( "MSAAppId", out, size );
 }
+
+BOOL gdkc_config_get_version( XVersion *version )
+{
+    unsigned int major, minor, build, revision;
+    char value[32];
+
+    if (!config_get_attr( "Identity", "Version", value, sizeof(value) )) return FALSE;
+    if (sscanf( value, "%u.%u.%u.%u", &major, &minor, &build, &revision ) != 4) return FALSE;
+    if (major > 0xffff || minor > 0xffff || build > 0xffff || revision > 0xffff) return FALSE;
+    version->major = major;
+    version->minor = minor;
+    version->build = build;
+    version->revision = revision;
+    return TRUE;
+}
+
+/* Display names may be resource references ("ms-resource:..."), which are of no use to a game. */
+static BOOL config_get_display_text( const char *attribute, char *out, SIZE_T size )
+{
+    return config_get_attr( "ShellVisuals", attribute, out, size ) && strncmp( out, "ms-resource:", 12 );
+}
+
+BOOL gdkc_config_get_display_name( char *out, SIZE_T size )
+{
+    return config_get_display_text( "DefaultDisplayName", out, size );
+}
+
+BOOL gdkc_config_get_publisher_display_name( char *out, SIZE_T size )
+{
+    return config_get_display_text( "PublisherDisplayName", out, size );
+}
