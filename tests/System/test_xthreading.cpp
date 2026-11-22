@@ -20,6 +20,7 @@
 
 #include "../test_fixtures.h"
 
+#include <chrono>
 #include <thread>
 
 #include <windows.h>
@@ -2054,16 +2055,24 @@ TEST_F(XThreadingTests, VerifySubmitCallbackWithWait)
         XTaskQueuePort::Completion
     };
 
+    // Milliseconds of the clock the queue's timer uses. GetTickCount64 is a coarser, separate clock (under Wine it
+    // ran up to a millisecond behind it), so callbacks seemed to come early.
+    static auto now = []() -> uint64_t
+    {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+    };
+
     auto cb = [](void* context, BOOLEAN)
     {
         ArgData* data = (ArgData*)context;
-        data->Data->Times[data->Index] = GetTickCount64();
+        data->Data->Times[data->Index] = now();
     };
 
     for (int i = 0; i < _countof(streams); i++)
     {
         XTaskQueuePort stream = streams[i];
-        uint64_t baseTicks = GetTickCount64();
+        uint64_t baseTicks = now();
 
         ArgData call1;
         call1.Index = 0;
@@ -2092,10 +2101,12 @@ TEST_F(XThreadingTests, VerifySubmitCallbackWithWait)
         uint64_t call2Ticks = result.Times[1] - baseTicks;
         uint64_t call3Ticks = result.Times[2] - baseTicks;
 
-        // Call 1 at index 0 should have a tick count > 1000 and < 1100 (100ms tolerance for debugger overhead)
-        EXPECT_TRUE(call1Ticks >= 1000 && call1Ticks < 1100);
-        EXPECT_TRUE(call2Ticks < 100);
-        EXPECT_TRUE(call3Ticks >= 500 && call3Ticks < 600);
+        // Call 1 at index 0 should come after 1000 ms and within 100 ms (tolerance for debugger overhead)
+        EXPECT_GE(call1Ticks, 1000u);
+        EXPECT_LT(call1Ticks, 1100u);
+        EXPECT_LT(call2Ticks, 100u);
+        EXPECT_GE(call3Ticks, 500u);
+        EXPECT_LT(call3Ticks, 600u);
     }
 }
 
