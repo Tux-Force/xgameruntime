@@ -1,0 +1,50 @@
+# Event registrations whose event can never happen under xTux. `tools/gdkgen.py events --write`
+# turns each listed stub into a registration that checks its arguments, hands out a unique
+# token and never invokes the callback; the unregistration returns TRUE. Games then register
+# without errors instead of getting E_NOTIMPL.
+#
+# Only list an event here when it truly never happens; the reason ends up as a comment in the
+# generated code. Once an event is implemented by hand, remove it from this list.
+# `register` and `unregister` are interface method names as in the IDL (with the C number suffix
+# for later versions). Several registrations may share one unregistration. `require` lists more
+# parameters that must not be NULL (E_INVALIDARG).
+#
+# Not listed on purpose: XUserRegisterForDeviceAssociationChanged (controller hot-plug happens on
+# Linux too) and XUserRegisterForDefaultAudioEndpointUtf16Changed (the default audio device can
+# change under PipeWire). They need real implementations together with their getters.
+
+[[never_fires]]
+register = "XGameInviteRegisterForEvent"
+unregister = "XGameInviteUnregisterForEvent"
+reason = "Game invites reach a game through the Xbox shell and notification service on Windows. xTux has no such service, so no invite is ever delivered and the callback is never invoked."
+
+[[never_fires]]
+register = "XGameInviteRegisterForPendingEvent"
+unregister = "XGameInviteUnregisterForPendingEvent"
+reason = "Pending invites come from the Xbox shell on Windows. xTux has none, so there is never a pending invite and the callback is never invoked."
+
+[[never_fires]]
+register = "XGameProtocolRegisterForActivation"
+unregister = "XGameProtocolUnregisterForActivation"
+reason = "Protocol activation of a running game goes through the Windows shell's URI handlers. xTux registers no URI scheme for games, so the callback is never invoked."
+
+[[never_fires]]
+register = "XGameActivationRegisterForEvent"
+unregister = "XGameActivationUnregisterForEvent"
+reason = "Activation events are raised by the Windows shell when a running game is activated again. xTux starts games once and never re-activates them, so the callback is never invoked."
+
+[[never_fires]]
+register = "XGameStreamingRegisterConnectionStateChanged"
+unregister = "XGameStreamingUnregisterConnectionStateChanged"
+reason = "Xbox cloud and console streaming clients cannot connect to a game under xTux, so the streaming connection state never changes and the callback is never invoked."
+
+[[never_fires]]
+register = "XGameStreamingRegisterClientPropertiesChanged"
+unregister = "XGameStreamingUnregisterClientPropertiesChanged"
+reason = "No streaming client ever connects under xTux, so client properties never change and the callback is never invoked."
+
+[[never_fires]]
+register = "XStoreRegisterPackageLicenseLost"
+unregister = "XStoreUnregisterPackageLicenseLost"
+require = ["storeLicenseHandle"]
+reason = "xTux checks the license before the game starts and does not revoke it while the game runs, so a package license is never lost during a run and the callback is never invoked."
