@@ -28,6 +28,8 @@ classes.
 - **XTaskQueue / XAsync:** upstream's implementation (`src/System`), based on Microsoft's open source libHttpClient.
 - **XUser:** the signed-in user from xTux (XUID, gamertags, age group, privileges) and Xbox Live tokens with request
   signatures through the xTux bridge.
+- **XGameUi:** message, error and text entry dialogs, achievements and profile cards (contents through the bridge),
+  and the game's own UI through `XGameUiSetUiCallbacks`. Invites and the player picker need UI of the game.
 - **XStore:** game license state, store license tokens through the bridge, empty add-on queries, no-op package updates.
 - **XGameSave / XPersistentLocalStorage:** file based containers and blobs in the game's package folder.
 - **XNetworking:** connectivity hints (including the initial notification XCurl waits for), security information for

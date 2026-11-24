@@ -408,22 +408,101 @@ static HRESULT WINAPI __PADDING__( IXUserImpl6 *iface )
     return E_NOTIMPL;
 }
 
+struct picture_request
+{
+    UINT32 pixels;
+    UINT64 xuid;
+    char *data;                 /* bridge answer, decoded in place */
+    SIZE_T size;
+};
+
+/* Decodes base64 in place and answers the size of the data, 0 when it is none. */
+static SIZE_T base64_decode( char *text )
+{
+    BYTE *start = (BYTE *)text, *out = start;
+    UINT32 bits = 0, count = 0, value;
+
+    for (; *text && *text != '='; text++)
+    {
+        if (*text >= 'A' && *text <= 'Z') value = *text - 'A';
+        else if (*text >= 'a' && *text <= 'z') value = *text - 'a' + 26;
+        else if (*text >= '0' && *text <= '9') value = *text - '0' + 52;
+        else if (*text == '+') value = 62;
+        else if (*text == '/') value = 63;
+        else return 0;
+        bits = (bits << 6) | value;
+        if ((count += 6) >= 8) *out++ = bits >> (count -= 8);
+    }
+    return out - start;
+}
+
+static HRESULT WINAPI picture_provider( XAsyncOp op, const XAsyncProviderData *data )
+{
+    struct picture_request *request = data->context;
+    char body[64];
+    HRESULT hr;
+
+    switch (op)
+    {
+        case XAsyncOp_Begin:
+            return IXThreadingImpl_XAsyncSchedule( x_threading_impl, data->async, 0 );
+
+        case XAsyncOp_DoWork:
+            sprintf( body, "%I64u\n%u", request->xuid, request->pixels );
+            if (SUCCEEDED(hr = gdkc_bridge_post( L"/xbox/gamer-picture", body, &request->data )) &&
+                !(request->size = base64_decode( request->data )))
+                hr = HRESULT_FROM_WIN32( ERROR_BAD_NET_RESP );
+            IXThreadingImpl_XAsyncComplete( x_threading_impl, data->async, hr, SUCCEEDED(hr) ? request->size : 0 );
+            return S_OK;
+
+        case XAsyncOp_GetResult:
+            if (data->bufferSize < request->size) return HRESULT_FROM_WIN32( ERROR_INSUFFICIENT_BUFFER );
+            memcpy( data->buffer, request->data, request->size );
+            return S_OK;
+
+        case XAsyncOp_Cleanup:
+            free( request->data );
+            free( request );
+            return S_OK;
+
+        default:
+            return S_OK;
+    }
+}
+
 static HRESULT WINAPI x_user_XUserGetGamerPictureAsync( IXUserImpl6 *iface, XUserHandle user, XUserGamerPictureSize pictureSize, XAsyncBlock *async )
 {
-    FIXME( "iface %p, user %p, pictureSize %d, async %p stub!\n", iface, user, pictureSize, async );
-    return E_NOTIMPL;
+    TRACE( "iface %p, user %p, pictureSize %d, async %p.\n", iface, user, pictureSize, async );
+
+    static const UINT32 pixels[] = { 64, 208, 424, 1080 };
+    struct picture_request *request;
+    HRESULT hr;
+
+    if (!user || !async || (UINT32)pictureSize >= ARRAY_SIZE(pixels)) return E_INVALIDARG;
+    /* Without Xodus there is nobody to ask. */
+    if (!gdkc_bridge_available()) return E_NOTIMPL;
+    if (!(request = calloc( 1, sizeof(*request) ))) return E_OUTOFMEMORY;
+    request->pixels = pixels[pictureSize];
+    request->xuid = user->xuid;
+    if (FAILED(hr = IXThreadingImpl_XAsyncBegin( x_threading_impl, async, request, x_user_XUserGetGamerPictureAsync, "XUserGetGamerPictureAsync", picture_provider )))
+        free( request );
+    return hr;
 }
 
 static HRESULT WINAPI x_user_XUserGetGamerPictureResultSize( IXUserImpl6 *iface, XAsyncBlock *async, SIZE_T *bufferSize )
 {
-    FIXME( "iface %p, async %p, bufferSize %p stub!\n", iface, async, bufferSize );
-    return E_NOTIMPL;
+    TRACE( "iface %p, async %p, bufferSize %p.\n", iface, async, bufferSize );
+
+    if (!async || !bufferSize) return E_INVALIDARG;
+    return IXThreadingImpl_XAsyncGetResultSize( x_threading_impl, async, bufferSize );
 }
 
 static HRESULT WINAPI x_user_XUserGetGamerPictureResult( IXUserImpl6 *iface, XAsyncBlock *async, SIZE_T bufferSize, void *buffer, SIZE_T *bufferUsed )
 {
-    FIXME( "iface %p, async %p, bufferSize %Iu, buffer %p, bufferUsed %p stub!\n", iface, async, bufferSize, buffer, bufferUsed );
-    return E_NOTIMPL;
+    TRACE( "iface %p, async %p, bufferSize %Iu, buffer %p, bufferUsed %p.\n", iface, async, bufferSize, buffer, bufferUsed );
+
+    if (!async || !buffer) return E_INVALIDARG;
+    return IXThreadingImpl_XAsyncGetResult( x_threading_impl, async, x_user_XUserGetGamerPictureAsync, bufferSize, buffer, bufferUsed );
 }
 
 static HRESULT WINAPI x_user_XUserGetAgeGroup( IXUserImpl6 *iface, XUserHandle user, XUserAgeGroup *ageGroup )

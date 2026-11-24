@@ -25,6 +25,7 @@ struct x_game_streaming
 {
     IXGameStreamingImpl3 IXGameStreamingImpl3_iface;
     LONG ref;
+    LONG initialized; /* number of outstanding XGameStreamingInitialize calls */
 };
 
 WINE_DEFAULT_DEBUG_CHANNEL(gdkc);
@@ -70,20 +71,39 @@ static ULONG WINAPI x_game_streaming_Release( IXGameStreamingImpl3 *iface )
     return ref;
 }
 
+/* No streaming client ever connects to a game under xTux, so every call that needs something from
+ * a stream fails with the error Windows reports without one. */
+static HRESULT no_stream_error( IXGameStreamingImpl3 *iface, HRESULT hr )
+{
+    struct x_game_streaming *impl = impl_from_IXGameStreamingImpl3( iface );
+    return InterlockedCompareExchange( &impl->initialized, 0, 0 ) ? hr : E_GAMESTREAMING_NOT_INITIALIZED;
+}
+
 static HRESULT WINAPI x_game_streaming_XGameStreamingInitialize( IXGameStreamingImpl3 *iface )
 {
-    FIXME( "iface %p stub!\n", iface );
-    return E_NOTIMPL;
+    struct x_game_streaming *impl = impl_from_IXGameStreamingImpl3( iface );
+
+    TRACE( "iface %p.\n", iface );
+
+    InterlockedIncrement( &impl->initialized );
+    return S_OK;
 }
 
 static void WINAPI x_game_streaming_XGameStreamingUninitialize( IXGameStreamingImpl3 *iface )
 {
-    FIXME( "iface %p stub!\n", iface );
+    struct x_game_streaming *impl = impl_from_IXGameStreamingImpl3( iface );
+    LONG count = InterlockedCompareExchange( &impl->initialized, 0, 0 ), old;
+
+    TRACE( "iface %p.\n", iface );
+
+    while (count > 0 && (old = InterlockedCompareExchange( &impl->initialized, count - 1, count )) != count)
+        count = old;
 }
 
 static BOOLEAN WINAPI x_game_streaming_XGameStreamingIsStreaming( IXGameStreamingImpl3 *iface )
 {
-    FIXME( "iface %p stub!\n", iface );
+    TRACE( "iface %p.\n", iface );
+
     return FALSE;
 }
 
@@ -110,25 +130,32 @@ static BOOLEAN WINAPI x_game_streaming_XGameStreamingUnregisterClientPropertiesC
 
 static HRESULT WINAPI x_game_streaming_XGameStreamingGetStreamPhysicalDimensions( IXGameStreamingImpl3 *iface, XGameStreamingClientId client, UINT32 *horizontalMm, UINT32 *verticalMm )
 {
-    FIXME( "iface %p, client %llu, horizontalMm %p, verticalMm %p stub!\n", iface, client, horizontalMm, verticalMm );
-    return E_NOTIMPL;
+    TRACE( "iface %p, client %llu, horizontalMm %p, verticalMm %p.\n", iface, client, horizontalMm, verticalMm );
+
+    if (!horizontalMm || !verticalMm) return E_INVALIDARG;
+    return no_stream_error( iface, E_GAMESTREAMING_CLIENT_NOT_CONNECTED );
 }
 
 static UINT32 WINAPI x_game_streaming_XGameStreamingGetClientCount( IXGameStreamingImpl3 *iface )
 {
-    FIXME( "iface %p stub!\n", iface );
+    TRACE( "iface %p.\n", iface );
+
     return 0;
 }
 
 static HRESULT WINAPI x_game_streaming_XGameStreamingGetClients( IXGameStreamingImpl3 *iface, UINT32 clientCount, XGameStreamingClientId *clients, UINT32 *clientsUsed )
 {
-    FIXME( "iface %p, clientCount %u, clients %p, clientsUsed %p stub!\n", iface, clientCount, clients, clientsUsed );
-    return E_NOTIMPL;
+    TRACE( "iface %p, clientCount %u, clients %p, clientsUsed %p.\n", iface, clientCount, clients, clientsUsed );
+
+    if (clientCount && !clients) return E_INVALIDARG;
+    if (clientsUsed) *clientsUsed = 0;
+    return S_OK;
 }
 
 static XGameStreamingConnectionState WINAPI x_game_streaming_XGameStreamingGetConnectionState( IXGameStreamingImpl3 *iface, XGameStreamingClientId client )
 {
-    FIXME( "iface %p, client %llu stub!\n", iface, client );
+    TRACE( "iface %p, client %llu.\n", iface, client );
+
     return XGameStreamingConnectionState_Disconnected;
 }
 
@@ -155,124 +182,155 @@ static BOOLEAN WINAPI x_game_streaming_XGameStreamingUnregisterConnectionStateCh
 
 static HRESULT WINAPI x_game_streaming_XGameStreamingGetStreamAddedLatency( IXGameStreamingImpl3 *iface, XGameStreamingClientId client, UINT32 *averageInputLatencyUs, UINT32 *averageOutputLatencyUs, UINT32 *standardDeviationUs )
 {
-    FIXME( "iface %p, client %llu, averageInputLatencyUs %p, averageOutputLatencyUs %p, standardDeviationUs %p stub!\n", iface, client, averageInputLatencyUs, averageOutputLatencyUs, standardDeviationUs );
-    return E_NOTIMPL;
+    TRACE( "iface %p, client %llu, averageInputLatencyUs %p, averageOutputLatencyUs %p, standardDeviationUs %p.\n", iface, client, averageInputLatencyUs, averageOutputLatencyUs, standardDeviationUs );
+
+    if (!averageInputLatencyUs || !averageOutputLatencyUs || !standardDeviationUs) return E_INVALIDARG;
+    return no_stream_error( iface, E_GAMESTREAMING_CLIENT_NOT_CONNECTED );
 }
 
 static SIZE_T WINAPI x_game_streaming_XGameStreamingGetServerLocationNameSize( IXGameStreamingImpl3 *iface )
 {
-    FIXME( "iface %p stub!\n", iface );
+    TRACE( "iface %p.\n", iface );
+
     return 0;
 }
 
 static HRESULT WINAPI x_game_streaming_XGameStreamingGetServerLocationName( IXGameStreamingImpl3 *iface, SIZE_T serverLocationNameSize, char *serverLocationName )
 {
-    FIXME( "iface %p, serverLocationNameSize %Iu, serverLocationName %p stub!\n", iface, serverLocationNameSize, serverLocationName );
-    return E_NOTIMPL;
+    TRACE( "iface %p, serverLocationNameSize %Iu, serverLocationName %p.\n", iface, serverLocationNameSize, serverLocationName );
+
+    if (!serverLocationName) return E_INVALIDARG;
+    return no_stream_error( iface, E_GAMESTREAMING_NO_DATACENTER );
 }
 
 static void WINAPI x_game_streaming_XGameStreamingHideTouchControls( IXGameStreamingImpl3 *iface )
 {
-    FIXME( "iface %p stub!\n", iface );
+    TRACE( "iface %p.\n", iface );
 }
 
 static void WINAPI x_game_streaming_XGameStreamingShowTouchControlLayout( IXGameStreamingImpl3 *iface, const char *layout )
 {
-    FIXME( "iface %p, layout %s stub!\n", iface, debugstr_a( layout ) );
+    TRACE( "iface %p, layout %s.\n", iface, debugstr_a( layout ) );
 }
 
 static void WINAPI x_game_streaming_XGameStreamingHideTouchControlsOnClient( IXGameStreamingImpl3 *iface, XGameStreamingClientId client )
 {
-    FIXME( "iface %p, client %llu stub!\n", iface, client );
+    TRACE( "iface %p, client %llu.\n", iface, client );
 }
 
 static void WINAPI x_game_streaming_XGameStreamingShowTouchControlLayoutOnClient( IXGameStreamingImpl3 *iface, XGameStreamingClientId client, const char *layout )
 {
-    FIXME( "iface %p, client %llu, layout %s stub!\n", iface, client, debugstr_a( layout ) );
+    TRACE( "iface %p, client %llu, layout %s.\n", iface, client, debugstr_a( layout ) );
 }
 
 static HRESULT WINAPI x_game_streaming_XGameStreamingIsTouchInputEnabled( IXGameStreamingImpl3 *iface, XGameStreamingClientId client, BOOLEAN *touchInputEnabled )
 {
-    FIXME( "iface %p, client %llu, touchInputEnabled %p stub!\n", iface, client, touchInputEnabled );
-    return E_NOTIMPL;
+    TRACE( "iface %p, client %llu, touchInputEnabled %p.\n", iface, client, touchInputEnabled );
+
+    if (!touchInputEnabled) return E_INVALIDARG;
+    return no_stream_error( iface, E_GAMESTREAMING_CLIENT_NOT_CONNECTED );
 }
 
 static HRESULT WINAPI x_game_streaming_XGameStreamingGetLastFrameDisplayed( IXGameStreamingImpl3 *iface, XGameStreamingClientId client, D3D12XBOX_FRAME_PIPELINE_TOKEN *framePipelineToken )
 {
-    FIXME( "iface %p, client %llu, framePipelineToken %p stub!\n", iface, client, framePipelineToken );
-    return E_NOTIMPL;
+    TRACE( "iface %p, client %llu, framePipelineToken %p.\n", iface, client, framePipelineToken );
+
+    if (!framePipelineToken) return E_INVALIDARG;
+    return no_stream_error( iface, E_GAMESTREAMING_CLIENT_NOT_CONNECTED );
 }
 
 static HRESULT WINAPI x_game_streaming_XGameStreamingGetAssociatedFrame( IXGameStreamingImpl3 *iface, IGameInputReading *gamepadReading, D3D12XBOX_FRAME_PIPELINE_TOKEN *framePipelineToken )
 {
-    FIXME( "iface %p, gamepadReading %p, framePipelineToken %p stub!\n", iface, gamepadReading, framePipelineToken );
-    return E_NOTIMPL;
+    TRACE( "iface %p, gamepadReading %p, framePipelineToken %p.\n", iface, gamepadReading, framePipelineToken );
+
+    if (!gamepadReading || !framePipelineToken) return E_INVALIDARG;
+    return no_stream_error( iface, E_GAMESTREAMING_NOT_STREAMING_CONTROLLER );
 }
 
 static HRESULT WINAPI x_game_streaming_XGameStreamingGetGamepadPhysicality( IXGameStreamingImpl3 *iface, IGameInputReading *gamepadReading, XGameStreamingGamepadPhysicality *gamepadPhysicality )
 {
-    FIXME( "iface %p, gamepadReading %p, gamepadPhysicality %p stub!\n", iface, gamepadReading, gamepadPhysicality );
-    return E_NOTIMPL;
+    TRACE( "iface %p, gamepadReading %p, gamepadPhysicality %p.\n", iface, gamepadReading, gamepadPhysicality );
+
+    if (!gamepadReading || !gamepadPhysicality) return E_INVALIDARG;
+    return no_stream_error( iface, E_GAMESTREAMING_NOT_STREAMING_CONTROLLER );
 }
 
 static HRESULT WINAPI x_game_streaming_XGameStreamingUpdateTouchControlsState( IXGameStreamingImpl3 *iface, SIZE_T operationCount, const XGameStreamingTouchControlsStateOperation *operations )
 {
-    FIXME( "iface %p, operationCount %Iu, operations %p stub!\n", iface, operationCount, operations );
-    return E_NOTIMPL;
+    TRACE( "iface %p, operationCount %Iu, operations %p.\n", iface, operationCount, operations );
+
+    if (operationCount && !operations) return E_INVALIDARG;
+    return no_stream_error( iface, S_OK ); /* applies to all clients, of which there are none */
 }
 
 static HRESULT WINAPI x_game_streaming_XGameStreamingUpdateTouchControlsStateOnClient( IXGameStreamingImpl3 *iface, XGameStreamingClientId client, SIZE_T operationCount, const XGameStreamingTouchControlsStateOperation *operations )
 {
-    FIXME( "iface %p, client %llu, operationCount %Iu, operations %p stub!\n", iface, client, operationCount, operations );
-    return E_NOTIMPL;
+    TRACE( "iface %p, client %llu, operationCount %Iu, operations %p.\n", iface, client, operationCount, operations );
+
+    if (operationCount && !operations) return E_INVALIDARG;
+    return no_stream_error( iface, E_GAMESTREAMING_CLIENT_NOT_CONNECTED );
 }
 
 static HRESULT WINAPI x_game_streaming_XGameStreamingShowTouchControlsWithStateUpdate( IXGameStreamingImpl3 *iface, const char *layout, SIZE_T operationCount, const XGameStreamingTouchControlsStateOperation *operations )
 {
-    FIXME( "iface %p, layout %s, operationCount %Iu, operations %p stub!\n", iface, debugstr_a( layout ), operationCount, operations );
-    return E_NOTIMPL;
+    TRACE( "iface %p, layout %s, operationCount %Iu, operations %p.\n", iface, debugstr_a( layout ), operationCount, operations );
+
+    if (operationCount && !operations) return E_INVALIDARG;
+    return no_stream_error( iface, S_OK ); /* applies to all clients, of which there are none */
 }
 
 static HRESULT WINAPI x_game_streaming_XGameStreamingShowTouchControlsWithStateUpdateOnClient( IXGameStreamingImpl3 *iface, XGameStreamingClientId client, const char *layout, SIZE_T operationCount, const XGameStreamingTouchControlsStateOperation *operations )
 {
-    FIXME( "iface %p, client %llu, layout %s, operationCount %Iu, operations %p stub!\n", iface, client, debugstr_a( layout ), operationCount, operations );
-    return E_NOTIMPL;
+    TRACE( "iface %p, client %llu, layout %s, operationCount %Iu, operations %p.\n", iface, client, debugstr_a( layout ), operationCount, operations );
+
+    if (operationCount && !operations) return E_INVALIDARG;
+    return no_stream_error( iface, E_GAMESTREAMING_CLIENT_NOT_CONNECTED );
 }
 
 static SIZE_T WINAPI x_game_streaming_XGameStreamingGetTouchBundleVersionNameSize( IXGameStreamingImpl3 *iface, XGameStreamingClientId client )
 {
-    FIXME( "iface %p, client %llu stub!\n", iface, client );
+    TRACE( "iface %p, client %llu.\n", iface, client );
+
     return 0;
 }
 
 static HRESULT WINAPI x_game_streaming_XGameStreamingGetTouchBundleVersion( IXGameStreamingImpl3 *iface, XGameStreamingClientId client, XVersion *version, SIZE_T versionNameSize, char *versionName )
 {
-    FIXME( "iface %p, client %llu, version %p, versionNameSize %Iu, versionName %p stub!\n", iface, client, version, versionNameSize, versionName );
-    return E_NOTIMPL;
+    TRACE( "iface %p, client %llu, version %p, versionNameSize %Iu, versionName %p.\n", iface, client, version, versionNameSize, versionName );
+
+    if (versionNameSize && !versionName) return E_INVALIDARG;
+    return no_stream_error( iface, E_GAMESTREAMING_CLIENT_NOT_CONNECTED );
 }
 
 static HRESULT WINAPI x_game_streaming_XGameStreamingGetClientIPAddress( IXGameStreamingImpl3 *iface, XGameStreamingClientId client, SIZE_T ipAddressSize, char *ipAddress )
 {
-    FIXME( "iface %p, client %llu, ipAddressSize %Iu, ipAddress %p stub!\n", iface, client, ipAddressSize, ipAddress );
-    return E_NOTIMPL;
+    TRACE( "iface %p, client %llu, ipAddressSize %Iu, ipAddress %p.\n", iface, client, ipAddressSize, ipAddress );
+
+    if (!ipAddress) return E_INVALIDARG;
+    return no_stream_error( iface, E_GAMESTREAMING_CLIENT_NOT_CONNECTED );
 }
 
 static HRESULT WINAPI x_game_streaming_XGameStreamingGetSessionId( IXGameStreamingImpl3 *iface, XGameStreamingClientId client, SIZE_T sessionIdSize, char *sessionId, SIZE_T *sessionIdUsed )
 {
-    FIXME( "iface %p, client %llu, sessionIdSize %Iu, sessionId %p, sessionIdUsed %p stub!\n", iface, client, sessionIdSize, sessionId, sessionIdUsed );
-    return E_NOTIMPL;
+    TRACE( "iface %p, client %llu, sessionIdSize %Iu, sessionId %p, sessionIdUsed %p.\n", iface, client, sessionIdSize, sessionId, sessionIdUsed );
+
+    if (!sessionId) return E_INVALIDARG;
+    return no_stream_error( iface, E_GAMESTREAMING_CLIENT_NOT_CONNECTED );
 }
 
 static HRESULT WINAPI x_game_streaming_XGameStreamingGetDisplayDetails( IXGameStreamingImpl3 *iface, XGameStreamingClientId client, UINT32 maxSupportedPixels, float widestSupportedAspectRatio, float tallestSupportedAspectRatio, XGameStreamingDisplayDetails *displayDetails )
 {
-    FIXME( "iface %p, client %llu, maxSupportedPixels %u, widestSupportedAspectRatio %a, tallestSupportedAspectRatio %a, displayDetails %p stub!\n", iface, client, maxSupportedPixels, widestSupportedAspectRatio, tallestSupportedAspectRatio, displayDetails );
-    return E_NOTIMPL;
+    TRACE( "iface %p, client %llu, maxSupportedPixels %u, widestSupportedAspectRatio %a, tallestSupportedAspectRatio %a, displayDetails %p.\n", iface, client, maxSupportedPixels, widestSupportedAspectRatio, tallestSupportedAspectRatio, displayDetails );
+
+    if (!displayDetails) return E_INVALIDARG;
+    return no_stream_error( iface, E_GAMESTREAMING_CLIENT_NOT_CONNECTED );
 }
 
 static HRESULT WINAPI x_game_streaming_XGameStreamingSetResolution( IXGameStreamingImpl3 *iface, UINT32 width, UINT32 height )
 {
-    FIXME( "iface %p, width %u, height %u stub!\n", iface, width, height );
-    return E_NOTIMPL;
+    TRACE( "iface %p, width %u, height %u.\n", iface, width, height );
+
+    return no_stream_error( iface, E_GAMESTREAMING_CUSTOM_RESOLUTION_NOT_SUPPORTED );
 }
 
 static const struct IXGameStreamingImpl3Vtbl x_game_streaming_vtbl =

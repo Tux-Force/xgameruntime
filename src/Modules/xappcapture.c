@@ -110,14 +110,18 @@ static HRESULT WINAPI capture_XAppCaptureCloseScreenshotStream( IXAppCaptureImpl
 
 static HRESULT WINAPI capture_XAppCaptureEnableRecord( IXAppCaptureImpl4 *iface )
 {
-    FIXME( "iface %p stub!\n", iface );
-    return E_NOTIMPL;
+    TRACE( "iface %p.\n", iface );
+
+    /* Only permits or forbids the user to record; there is no recorder to act on it. */
+    return S_OK;
 }
 
 static HRESULT WINAPI capture_XAppCaptureDisableRecord( IXAppCaptureImpl4 *iface )
 {
-    FIXME( "iface %p stub!\n", iface );
-    return E_NOTIMPL;
+    TRACE( "iface %p.\n", iface );
+
+    /* Only permits or forbids the user to record; there is no recorder to act on it. */
+    return S_OK;
 }
 
 static HRESULT WINAPI capture_XAppCaptureGetVideoCaptureSettings( IXAppCaptureImpl4 *iface, XAppCaptureVideoCaptureSettings *userCaptureSettings )
@@ -223,9 +227,14 @@ static ULONG WINAPI metadata_Release( IXAppCaptureMetadataImpl *iface )
     return IXAppCaptureImpl4_Release( &impl->IXAppCaptureImpl4_iface );
 }
 
+/* Metadata annotates recordings. There is no recorder under xTux, so it is accepted and dropped,
+ * and the space for it never runs out. */
+#define METADATA_STORAGE_BYTES (512 * 1024)
+
 static BOOLEAN WINAPI metadata_XAppBroadcastIsAppBroadcasting( IXAppCaptureMetadataImpl *iface )
 {
-    FIXME( "iface %p stub!\n", iface );
+    TRACE( "iface %p.\n", iface );
+
     return FALSE;
 }
 
@@ -237,85 +246,122 @@ static HRESULT WINAPI metadata_XAppBroadcastShowUI( IXAppCaptureMetadataImpl *if
 
 static HRESULT WINAPI metadata_XAppBroadcastGetStatus( IXAppCaptureMetadataImpl *iface, XUserHandle requestingUser, XAppBroadcastStatus *appBroadcastStatus )
 {
-    FIXME( "iface %p, requestingUser %p, appBroadcastStatus %p stub!\n", iface, requestingUser, appBroadcastStatus );
-    return E_NOTIMPL;
+    TRACE( "iface %p, requestingUser %p, appBroadcastStatus %p.\n", iface, requestingUser, appBroadcastStatus );
+
+    if (!appBroadcastStatus) return E_INVALIDARG;
+    memset( appBroadcastStatus, 0, sizeof(*appBroadcastStatus) );
+    appBroadcastStatus->isDisabledBySystem = TRUE;
+    return S_OK;
 }
 
 static HRESULT WINAPI metadata_XAppBroadcastRegisterIsAppBroadcastingChanged( IXAppCaptureMetadataImpl *iface, XTaskQueueHandle queue, void *context, XAppBroadcastMonitorCallback *appBroadcastMonitorCallback, XTaskQueueRegistrationToken *token )
 {
-    FIXME( "iface %p, queue %p, context %p, appBroadcastMonitorCallback %p, token %p stub!\n", iface, queue, context, appBroadcastMonitorCallback, token );
-    return E_NOTIMPL;
+    static LONG64 next_token;
+
+    TRACE( "iface %p, queue %p, context %p, appBroadcastMonitorCallback %p, token %p.\n", iface, queue, context, appBroadcastMonitorCallback, token );
+
+    if (!appBroadcastMonitorCallback || !token) return E_INVALIDARG;
+    /* Broadcasting is not available under xTux, so its state never changes and the callback is
+     * never invoked. */
+    token->token = InterlockedIncrement64( &next_token );
+    return S_OK;
 }
 
 static BOOLEAN WINAPI metadata_XAppBroadcastUnregisterIsAppBroadcastingChanged( IXAppCaptureMetadataImpl *iface, XTaskQueueRegistrationToken token, BOOLEAN wait )
 {
-    FIXME( "iface %p, token %p, wait %d stub!\n", iface, &token, wait );
+    TRACE( "iface %p, token %I64u, wait %d.\n", iface, token.token, wait );
+
     return TRUE;
 }
 
 static HRESULT WINAPI metadata_XAppCaptureMetadataAddStringEvent( IXAppCaptureMetadataImpl *iface, const char *name, const char *value, XAppCaptureMetadataPriority priority )
 {
-    FIXME( "iface %p, name %s, value %s, priority %d stub!\n", iface, debugstr_a( name ), debugstr_a( value ), priority );
-    return E_NOTIMPL;
+    TRACE( "iface %p, name %s, value %s, priority %d.\n", iface, debugstr_a( name ), debugstr_a( value ), priority );
+
+    if (!name || !value) return E_INVALIDARG;
+    return S_OK;
 }
 
 static HRESULT WINAPI metadata_XAppCaptureMetadataAddInt32Event( IXAppCaptureMetadataImpl *iface, const char *name, INT32 value, XAppCaptureMetadataPriority priority )
 {
-    FIXME( "iface %p, name %s, value %d, priority %d stub!\n", iface, debugstr_a( name ), value, priority );
-    return E_NOTIMPL;
+    TRACE( "iface %p, name %s, value %d, priority %d.\n", iface, debugstr_a( name ), value, priority );
+
+    if (!name) return E_INVALIDARG;
+    return S_OK;
 }
 
 static HRESULT WINAPI metadata_XAppCaptureMetadataAddDoubleEvent( IXAppCaptureMetadataImpl *iface, const char *name, double value, XAppCaptureMetadataPriority priority )
 {
-    FIXME( "iface %p, name %s, value %e, priority %d stub!\n", iface, debugstr_a( name ), value, priority );
-    return E_NOTIMPL;
+    TRACE( "iface %p, name %s, value %e, priority %d.\n", iface, debugstr_a( name ), value, priority );
+
+    if (!name) return E_INVALIDARG;
+    return S_OK;
 }
 
 static HRESULT WINAPI metadata_XAppCaptureMetadataStartStringState( IXAppCaptureMetadataImpl *iface, const char *name, const char *value, XAppCaptureMetadataPriority priority )
 {
-    FIXME( "iface %p, name %s, value %s, priority %d stub!\n", iface, debugstr_a( name ), debugstr_a( value ), priority );
-    return E_NOTIMPL;
+    TRACE( "iface %p, name %s, value %s, priority %d.\n", iface, debugstr_a( name ), debugstr_a( value ), priority );
+
+    if (!name || !value) return E_INVALIDARG;
+    return S_OK;
 }
 
 static HRESULT WINAPI metadata_XAppCaptureMetadataStartInt32State( IXAppCaptureMetadataImpl *iface, const char *name, INT32 value, XAppCaptureMetadataPriority priority )
 {
-    FIXME( "iface %p, name %s, value %d, priority %d stub!\n", iface, debugstr_a( name ), value, priority );
-    return E_NOTIMPL;
+    TRACE( "iface %p, name %s, value %d, priority %d.\n", iface, debugstr_a( name ), value, priority );
+
+    if (!name) return E_INVALIDARG;
+    return S_OK;
 }
 
 static HRESULT WINAPI metadata_XAppCaptureMetadataStartDoubleState( IXAppCaptureMetadataImpl *iface, const char *name, double value, XAppCaptureMetadataPriority priority )
 {
-    FIXME( "iface %p, name %s, value %e, priority %d stub!\n", iface, debugstr_a( name ), value, priority );
-    return E_NOTIMPL;
+    TRACE( "iface %p, name %s, value %e, priority %d.\n", iface, debugstr_a( name ), value, priority );
+
+    if (!name) return E_INVALIDARG;
+    return S_OK;
 }
 
 static HRESULT WINAPI metadata_XAppCaptureMetadataStopState( IXAppCaptureMetadataImpl *iface, const char *name )
 {
-    FIXME( "iface %p, name %s stub!\n", iface, debugstr_a( name ) );
-    return E_NOTIMPL;
+    TRACE( "iface %p, name %s.\n", iface, debugstr_a( name ) );
+
+    if (!name) return E_INVALIDARG;
+    return S_OK;
 }
 
 static HRESULT WINAPI metadata_XAppCaptureMetadataStopAllStates( IXAppCaptureMetadataImpl *iface )
 {
-    FIXME( "iface %p stub!\n", iface );
-    return E_NOTIMPL;
+    TRACE( "iface %p.\n", iface );
+
+    return S_OK;
 }
 
 static HRESULT WINAPI metadata_XAppCaptureMetadataRemainingStorageBytesAvailable( IXAppCaptureMetadataImpl *iface, UINT64 *value )
 {
-    FIXME( "iface %p, value %p stub!\n", iface, value );
-    return E_NOTIMPL;
+    TRACE( "iface %p, value %p.\n", iface, value );
+
+    if (!value) return E_INVALIDARG;
+    *value = METADATA_STORAGE_BYTES;
+    return S_OK;
 }
 
 static HRESULT WINAPI metadata_XAppCaptureRegisterMetadataPurged( IXAppCaptureMetadataImpl *iface, XTaskQueueHandle queue, void *context, XAppCaptureMetadataPurgedCallback *callback, XTaskQueueRegistrationToken *token )
 {
-    FIXME( "iface %p, queue %p, context %p, callback %p, token %p stub!\n", iface, queue, context, callback, token );
-    return E_NOTIMPL;
+    static LONG64 next_token;
+
+    TRACE( "iface %p, queue %p, context %p, callback %p, token %p.\n", iface, queue, context, callback, token );
+
+    if (!callback || !token) return E_INVALIDARG;
+    /* Metadata is not stored, so none is ever purged and the callback is never invoked. */
+    token->token = InterlockedIncrement64( &next_token );
+    return S_OK;
 }
 
 static BOOLEAN WINAPI metadata_XAppCaptureUnRegisterMetadataPurged( IXAppCaptureMetadataImpl *iface, XTaskQueueRegistrationToken token, BOOLEAN wait )
 {
-    FIXME( "iface %p, token %p, wait %d stub!\n", iface, &token, wait );
+    TRACE( "iface %p, token %I64u, wait %d.\n", iface, token.token, wait );
+
     return TRUE;
 }
 

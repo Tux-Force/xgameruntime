@@ -30,7 +30,8 @@
 WINE_DEFAULT_DEBUG_CHANNEL(gdkc);
 
 #define BRIDGE_TIMEOUT_MS 30000
-#define BRIDGE_MAX_RESPONSE (1024 * 1024)
+/* The largest answer is a gamer picture in base64. */
+#define BRIDGE_MAX_RESPONSE (8 * 1024 * 1024)
 
 BOOL gdkc_bridge_available(void)
 {
