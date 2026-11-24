@@ -136,3 +136,15 @@ if(Python3_FOUND)
         --wine "${WINE_EXECUTABLE}" --binary "$<TARGET_FILE:test_gameui>"
         --dll "$<TARGET_FILE:xgameruntime>")
 endif()
+
+add_executable(test_store Modules/test_store.c)
+add_dependencies(test_store xgameruntime xgameruntime-idl)
+target_include_directories(test_store PRIVATE ${PROJECT_SOURCE_DIR}/include ${IDL_BINARY_DIR})
+target_compile_definitions(test_store PRIVATE __WINESRC__ COBJMACROS WIDL_C_INLINE_WRAPPERS)
+target_link_options(test_store PRIVATE -static -static-libgcc)
+set_target_properties(test_store PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+if(Python3_FOUND)
+    add_test(NAME store COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/Modules/run_store_tests.py"
+        --wine "${WINE_EXECUTABLE}" --binary "$<TARGET_FILE:test_store>"
+        --dll "$<TARGET_FILE:xgameruntime>")
+endif()

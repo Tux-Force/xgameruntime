@@ -22,6 +22,7 @@
 #include "private.h"
 
 #include <ctype.h>
+#include <time.h>
 
 WINE_DEFAULT_DEBUG_CHANNEL(gdkc);
 
@@ -108,8 +109,8 @@ static void get_sku_store_id( char *out, SIZE_T size );
  *
  * Xodus checks the game license before it starts the game. Add-ons are the ones Xodus installed
  * for the game; each one's license is asked from the licensing service through the bridge (see
- * xodusaddons.c). Add-ons the user owns but has not installed, and products of other games, are
- * not known here.
+ * xodusaddons.c). The bridge also knows the Store: the game's other products, prices and what the
+ * user owns of them. Without an answer from it only the installed ones are known.
  */
 #define PRODUCT_QUERY_MAGIC 0x51505358 /* XSPQ */
 #define LICENSE_MAGIC 0x434c5358       /* XSLC */
@@ -117,11 +118,19 @@ static void get_sku_store_id( char *out, SIZE_T size );
 /* Durable licenses from the Store do not expire; it reports them with this end of time. */
 #define NO_EXPIRATION ((time_t)253402300799) /* 9999-12-31 23:59:59 UTC */
 
+/* All products a query found; its pages share them. */
+struct product_set
+{
+    LONG ref;
+    UINT32 count, capacity;
+    XStoreProduct *products;
+};
+
 struct product_query
 {
     DWORD magic;
-    UINT32 count;
-    XStoreProduct *products;
+    struct product_set *set;
+    UINT32 first, count, page_size;
 };
 
 struct store_license
@@ -148,71 +157,158 @@ static void free_product( XStoreProduct *product )
 
     free( (char *)product->storeId );
     free( (char *)product->title );
+    free( (char *)product->description );
+    free( (char *)product->inAppOfferToken );
+    free( (char *)product->price.currencyCode );
     free( product->linkUri );
+    if (product->images) free( (char *)product->images->uri );
+    free( product->images );
     for (i = 0; i < product->skusCount; i++)
     {
         free( (char *)product->skus[i].skuId );
-        free( (char *)product->skus[i].title );
+        if (product->skus[i].availabilities) free( (char *)product->skus[i].availabilities->availabilityId );
+        free( product->skus[i].availabilities );
     }
     free( product->skus );
+}
+
+static void release_product_set( struct product_set *set )
+{
+    UINT32 i;
+
+    if (!set || InterlockedDecrement( &set->ref )) return;
+    for (i = 0; i < set->count; i++) free_product( &set->products[i] );
+    free( set->products );
+    free( set );
 }
 
 static void free_product_query( void *handle )
 {
     struct product_query *query = handle;
-    UINT32 i;
 
     if (!query) return;
-    for (i = 0; i < query->count; i++) free_product( &query->products[i] );
-    free( query->products );
+    release_product_set( query->set );
     query->magic = 0;
     free( query );
 }
 
-/* Adds a product with a single SKU; strings are copied. */
-static HRESULT add_product( struct product_query *query, UINT32 capacity, const char *store_id, const char *sku_id,
-                            const char *title, XStoreProductKind kind, BOOL owned )
+/* A page of the set; takes over the caller's reference. */
+static struct product_query *new_product_page( struct product_set *set, UINT32 first, UINT32 page_size )
 {
-    XStoreProduct *product;
+    struct product_query *query;
+
+    if (!(query = calloc( 1, sizeof(*query) )))
+    {
+        release_product_set( set );
+        return NULL;
+    }
+    query->magic = PRODUCT_QUERY_MAGIC;
+    query->set = set;
+    query->first = first;
+    query->page_size = page_size;
+    query->count = set->count - first;
+    if (page_size && query->count > page_size) query->count = page_size;
+    return query;
+}
+
+/* What is known about a product. */
+struct product_info
+{
+    const char *store_id, *sku_id, *title, *description, *offer_token, *currency, *availability_id, *image;
+    XStoreProductKind kind;
+    UINT32 quantity, image_width, image_height;
+    float base_price, price;
+    time_t offer_end;
+    BOOL has_download;
+};
+
+static void format_price( char out[16], float price, const char *currency )
+{
+    snprintf( out, 16, "%.2f %s", price, currency );
+}
+
+static const char *or_empty( const char *text )
+{
+    return text ? text : "";
+}
+
+/* Adds a product with a single SKU; strings are copied. */
+static HRESULT add_product( struct product_set *set, const struct product_info *info )
+{
+    XStoreProduct *product, *grown;
     XStoreSku *sku;
     char link[96];
 
-    if (query->count >= capacity) return E_UNEXPECTED;
-    product = &query->products[query->count];
+    if (set->count == set->capacity)
+    {
+        UINT32 capacity = set->capacity ? set->capacity * 2 : 16;
+        if (!(grown = realloc( set->products, capacity * sizeof(*grown) ))) return E_OUTOFMEMORY;
+        set->products = grown;
+        set->capacity = capacity;
+    }
+    product = &set->products[set->count];
     memset( product, 0, sizeof(*product) );
     if (!(sku = calloc( 1, sizeof(*sku) ))) return E_OUTOFMEMORY;
 
-    snprintf( link, sizeof(link), "https://www.microsoft.com/store/productId/%s", store_id );
-    product->storeId = strdup( store_id );
-    product->title = strdup( title );
-    product->linkUri = strdup( link );
+    snprintf( link, sizeof(link), "https://www.microsoft.com/store/productId/%s", info->store_id );
     product->skus = sku;
     product->skusCount = 1;
-    sku->skuId = strdup( sku_id );
-    sku->title = strdup( title );
-    if (!product->storeId || !product->title || !product->linkUri || !sku->skuId || !sku->title)
+    product->storeId = strdup( info->store_id );
+    product->title = strdup( or_empty( info->title ) );
+    product->description = strdup( or_empty( info->description ) );
+    product->inAppOfferToken = strdup( or_empty( info->offer_token ) );
+    product->price.currencyCode = strdup( or_empty( info->currency ) );
+    product->linkUri = strdup( link );
+    sku->skuId = strdup( info->sku_id );
+    if (!product->storeId || !product->title || !product->description || !product->inAppOfferToken ||
+        !product->price.currencyCode || !product->linkUri || !sku->skuId) goto failed;
+
+    product->language = "";
+    product->productKind = info->kind;
+    product->hasDigitalDownload = !!info->has_download;
+    product->isInUserCollection = info->quantity > 0;
+    product->price.basePrice = info->base_price;
+    product->price.price = info->price;
+    product->price.recurrencePrice = info->price;
+    format_price( product->price.formattedBasePrice, info->base_price, product->price.currencyCode );
+    format_price( product->price.formattedPrice, info->price, product->price.currencyCode );
+    format_price( product->price.formattedRecurrencePrice, info->price, product->price.currencyCode );
+    if ((product->price.isOnSale = info->price < info->base_price)) product->price.saleEndDate = info->offer_end;
+
+    if (info->image && *info->image)
     {
-        free_product( product );
-        return E_OUTOFMEMORY;
+        if (!(product->images = calloc( 1, sizeof(*product->images) ))) goto failed;
+        product->imagesCount = 1;
+        if (!(product->images->uri = strdup( info->image ))) goto failed;
+        product->images->width = info->image_width;
+        product->images->height = info->image_height;
+        product->images->caption = "";
+        product->images->imagePurposeTag = "Poster";
     }
 
-    product->description = "";
-    product->language = "";
-    product->inAppOfferToken = "";
-    product->productKind = kind;
-    product->price.currencyCode = "";
-    product->hasDigitalDownload = TRUE;
-    product->isInUserCollection = owned;
-    sku->description = "";
+    sku->title = product->title;
+    sku->description = product->description;
     sku->language = "";
-    sku->price.currencyCode = "";
-    sku->isInUserCollection = owned;
-    sku->collectionData.quantity = owned ? 1 : 0;
-    sku->collectionData.endDate = owned ? NO_EXPIRATION : 0;
+    sku->price = product->price;
+    sku->isInUserCollection = info->quantity > 0;
+    sku->collectionData.quantity = info->quantity;
+    sku->collectionData.endDate = info->quantity ? NO_EXPIRATION : 0;
     sku->collectionData.campaignId = "";
     sku->collectionData.developerOfferId = "";
-    query->count++;
+    if (info->availability_id && *info->availability_id)
+    {
+        if (!(sku->availabilities = calloc( 1, sizeof(*sku->availabilities) ))) goto failed;
+        sku->availabilitiesCount = 1;
+        if (!(sku->availabilities->availabilityId = strdup( info->availability_id ))) goto failed;
+        sku->availabilities->price = product->price;
+        sku->availabilities->endDate = info->offer_end ? info->offer_end : NO_EXPIRATION;
+    }
+    set->count++;
     return S_OK;
+
+failed:
+    free_product( product );
+    return E_OUTOFMEMORY;
 }
 
 enum store_query
@@ -222,13 +318,28 @@ enum store_query
     QUERY_STORE_IDS,
     QUERY_CURRENT_GAME,
     QUERY_PACKAGE,
+    QUERY_STORE_ID_ADDONS,
 };
+
+static BOOL valid_product_id( const char *id )
+{
+    SIZE_T i;
+
+    if (!id || !*id) return FALSE;
+    for (i = 0; id[i]; i++) if (i >= GDKC_STORE_ID_SIZE - 1 || !isalnum( (unsigned char)id[i] )) return FALSE;
+    return TRUE;
+}
 
 struct store_request
 {
     HRESULT (*work)( struct store_request *request );
     enum store_query query;
     XStoreProductKind kinds;
+    UINT32 page_size;
+    struct product_set *set;
+    UINT32 first;
+    UINT32 quantity;
+    GUID tracking_id;
     char **ids;
     SIZE_T ids_count;
     char *id;
@@ -248,6 +359,7 @@ static void free_store_request( struct store_request *request )
     for (i = 0; i < request->ids_count; i++) free( request->ids[i] );
     free( request->ids );
     free( request->id );
+    release_product_set( request->set );
     free( request->result );
     free( request );
 }
@@ -348,36 +460,164 @@ static BOOL wants_id( const struct store_request *request, const char *store_id 
     return FALSE;
 }
 
-static HRESULT add_game_product( struct product_query *query, UINT32 capacity )
+static HRESULT add_game_product( struct product_set *set )
 {
     char store_id[GDKC_STORE_ID_SIZE], sku_store_id[32], name[256], *sku;
+    struct product_info info = {0};
 
     if (!gdkc_config_get_store_id( store_id, sizeof(store_id) )) return S_OK;
     if (!gdkc_config_get_display_name( name, sizeof(name) )) strcpy( name, store_id );
     get_sku_store_id( sku_store_id, sizeof(sku_store_id) );
     sku = (sku = strchr( sku_store_id, '/' )) ? sku + 1 : "0010";
-    return add_product( query, capacity, store_id, sku, name, XStoreProductKind_Game, is_license_verified() );
+    info.store_id = store_id;
+    info.sku_id = sku;
+    info.title = name;
+    info.kind = XStoreProductKind_Game;
+    info.quantity = is_license_verified() ? 1 : 0;
+    info.has_download = TRUE;
+    return add_product( set, &info );
+}
+
+static XStoreProductKind parse_product_kind( const char *name )
+{
+    if (!strcmp( name, "Game" )) return XStoreProductKind_Game;
+    if (!strcmp( name, "Durable" )) return XStoreProductKind_Durable;
+    if (!strcmp( name, "Consumable" )) return XStoreProductKind_Consumable;
+    if (!strcmp( name, "UnmanagedConsumable" )) return XStoreProductKind_UnmanagedConsumable;
+    if (!strcmp( name, "Pass" )) return XStoreProductKind_Pass;
+    return XStoreProductKind_None;
+}
+
+static BOOL has_product( const struct product_set *set, const char *store_id )
+{
+    UINT32 i;
+
+    for (i = 0; i < set->count; i++) if (!_stricmp( set->products[i].storeId, store_id )) return TRUE;
+    return FALSE;
+}
+
+/* A price of the Store's list: always with a point, whatever locale the game set. */
+static float parse_price( const char *text )
+{
+    float value = 0, scale = 1;
+
+    for (; *text >= '0' && *text <= '9'; text++) value = value * 10 + (*text - '0');
+    if (*text != '.') return value;
+    for (text++; *text >= '0' && *text <= '9'; text++) value += (*text - '0') * (scale /= 10);
+    return value;
+}
+
+/* Adds the products of the bridge's list, see begin_product_query(). Lines that do not fit are left out. */
+static HRESULT add_listed_products( struct product_set *set, char *text, const struct store_request *request )
+{
+    const struct gdkc_addon *addon;
+    struct gdkc_addons *addons = NULL;
+    char *line, *next, *tab, *fields[16];
+    HRESULT hr = S_OK;
+    UINT32 i;
+
+    /* The licenses of installed add-ons are known for sure. */
+    if (FAILED(gdkc_addons_get( &addons ))) addons = NULL;
+    for (line = text; SUCCEEDED(hr) && line && *line; line = next)
+    {
+        struct product_info info = {0};
+        BOOL licensed;
+
+        if ((next = strchr( line, '\n' ))) *next++ = 0;
+        for (i = 0; i < ARRAY_SIZE(fields); i++)
+        {
+            fields[i] = line;
+            if (!line) break;
+            if ((tab = strchr( line, '\t' ))) *tab = 0;
+            line = tab ? tab + 1 : NULL;
+        }
+        if (i != ARRAY_SIZE(fields) || line) { WARN( "malformed product line.\n" ); continue; }
+        info.store_id = fields[0];
+        info.kind = parse_product_kind( fields[1] );
+        info.sku_id = fields[2];
+        info.quantity = strtoul( fields[3], NULL, 10 );
+        info.has_download = fields[4][0] == '1';
+        info.base_price = parse_price( fields[5] );
+        info.price = parse_price( fields[6] );
+        info.currency = fields[7];
+        info.offer_end = _strtoi64( fields[8], NULL, 10 );
+        info.availability_id = fields[9];
+        info.offer_token = fields[10];
+        info.image = fields[11];
+        info.image_width = strtoul( fields[12], NULL, 10 );
+        info.image_height = strtoul( fields[13], NULL, 10 );
+        info.title = fields[14];
+        info.description = fields[15];
+        if (!*info.store_id || strlen( info.store_id ) >= GDKC_STORE_ID_SIZE || strlen( info.sku_id ) != 4) continue;
+        if (!(info.kind & request->kinds) || has_product( set, info.store_id )) continue;
+        if (is_game_store_id( info.store_id )) info.quantity = is_license_verified() ? 1 : 0;
+        else if (addons && (addon = gdkc_addons_find( addons, info.store_id )) && SUCCEEDED(gdkc_addon_license( addon, &licensed )))
+            info.quantity = licensed ? 1 : 0;
+        if (request->query == QUERY_ENTITLED && !info.quantity) continue;
+        hr = add_product( set, &info );
+    }
+    gdkc_addons_release( addons );
+    return hr;
+}
+
+/* The products of a query as Xodus knows them from the Store, see xodusbridge.c; NULL when it does not answer. */
+static char *ask_products( const struct store_request *request )
+{
+    char game[GDKC_STORE_ID_SIZE], *body, *p, *response = NULL;
+    SIZE_T size = 64, i;
+
+    if (!gdkc_bridge_available() || !gdkc_config_get_store_id( game, sizeof(game) )) return NULL;
+    for (i = 0; i < request->ids_count; i++) size += strlen( request->ids[i] ) + 1;
+    if (request->id) size += strlen( request->id );
+    if (!(body = malloc( size ))) return NULL;
+    switch (request->query)
+    {
+        case QUERY_ASSOCIATED:
+        case QUERY_ENTITLED:
+            sprintf( body, "associated\n%s\n", game );
+            break;
+        case QUERY_STORE_ID_ADDONS:
+            sprintf( body, "associated\n%s\n", request->id );
+            break;
+        case QUERY_CURRENT_GAME:
+            sprintf( body, "products\n%s\n", game );
+            break;
+        case QUERY_STORE_IDS:
+            p = body + sprintf( body, "products\n" );
+            for (i = 0; i < request->ids_count; i++)
+                if (!strpbrk( request->ids[i], "\r\n" )) p += sprintf( p, "%s\n", request->ids[i] );
+            break;
+        default:
+            free( body );
+            return NULL;
+    }
+    if (FAILED(gdkc_bridge_post( L"/store/products", body, &response ))) response = NULL;
+    free( body );
+    return response;
 }
 
 static HRESULT product_query_work( struct store_request *request )
 {
     struct gdkc_addons *addons = NULL;
     struct product_query *query;
+    struct product_set *set;
     BOOL want_game = FALSE;
     HRESULT hr = S_OK;
+    char *listed;
     UINT32 i;
 
     if (request->query != QUERY_CURRENT_GAME && FAILED(hr = gdkc_addons_get( &addons ))) return hr;
 
-    if (!(query = calloc( 1, sizeof(*query) ))) { gdkc_addons_release( addons ); return E_OUTOFMEMORY; }
-    query->magic = PRODUCT_QUERY_MAGIC;
-    if (!(query->products = calloc( (addons ? addons->count : 0) + 1, sizeof(*query->products) )))
+    if (!(set = calloc( 1, sizeof(*set) ))) { gdkc_addons_release( addons ); return E_OUTOFMEMORY; }
+    set->ref = 1;
+
+    if ((listed = ask_products( request )))
     {
-        free( query );
-        gdkc_addons_release( addons );
-        return E_OUTOFMEMORY;
+        hr = add_listed_products( set, listed, request );
+        free( listed );
     }
 
+    /* Installed but not listed, or the Store did not answer: what is known without it. */
     switch (request->query)
     {
         case QUERY_CURRENT_GAME: want_game = TRUE; break;
@@ -385,33 +625,56 @@ static HRESULT product_query_work( struct store_request *request )
         case QUERY_PACKAGE: want_game = (request->kinds & XStoreProductKind_Game) && is_game_package( request->id ); break;
         default: break;
     }
-    if (want_game) hr = add_game_product( query, (addons ? addons->count : 0) + 1 );
+    if (want_game)
+    {
+        char game[GDKC_STORE_ID_SIZE];
+        if (SUCCEEDED(hr) && gdkc_config_get_store_id( game, sizeof(game) ) && !has_product( set, game )) hr = add_game_product( set );
+    }
 
     for (i = 0; SUCCEEDED(hr) && addons && i < addons->count && (request->kinds & XStoreProductKind_Durable); i++)
     {
         const struct gdkc_addon *addon = &addons->items[i];
+        struct product_info info = {0};
         BOOL licensed = FALSE;
 
         if (request->query == QUERY_CURRENT_GAME) break;
         if (request->query == QUERY_STORE_IDS && !wants_id( request, addon->store_id )) continue;
         if (request->query == QUERY_PACKAGE && gdkc_addons_find( addons, request->id ) != addon) continue;
+        if (request->query == QUERY_STORE_ID_ADDONS && !is_game_store_id( request->id )) continue;
+        if (has_product( set, addon->store_id )) continue;
         if (FAILED(gdkc_addon_license( addon, &licensed ))) licensed = FALSE;
         if (request->query == QUERY_ENTITLED && !licensed) continue;
-        hr = add_product( query, addons->count + 1, addon->store_id, "0010", addon->name, XStoreProductKind_Durable, licensed );
+        info.store_id = addon->store_id;
+        info.sku_id = "0010";
+        info.title = addon->name;
+        info.kind = XStoreProductKind_Durable;
+        info.quantity = licensed ? 1 : 0;
+        info.has_download = TRUE;
+        hr = add_product( set, &info );
     }
     gdkc_addons_release( addons );
 
     if (FAILED(hr))
     {
-        free_product_query( query );
+        release_product_set( set );
         return hr;
     }
-    TRACE( "query %d found %u products.\n", request->query, query->count );
+    TRACE( "query %d found %u products.\n", request->query, set->count );
+    if (!(query = new_product_page( set, 0, request->page_size ))) return E_OUTOFMEMORY;
+    return set_handle_result( request, query, free_product_query );
+}
+
+static HRESULT next_page_work( struct store_request *request )
+{
+    struct product_query *query;
+
+    InterlockedIncrement( &request->set->ref );
+    if (!(query = new_product_page( request->set, request->first, request->page_size ))) return E_OUTOFMEMORY;
     return set_handle_result( request, query, free_product_query );
 }
 
 static HRESULT begin_product_query( XAsyncBlock *async, enum store_query type, XStoreProductKind kinds, const char *id,
-                                    const char **ids, SIZE_T ids_count, const void *identity, const char *name )
+                                    const char **ids, SIZE_T ids_count, UINT32 page_size, const void *identity, const char *name )
 {
     struct store_request *request;
     SIZE_T i;
@@ -419,6 +682,7 @@ static HRESULT begin_product_query( XAsyncBlock *async, enum store_query type, X
     if (!async) return E_INVALIDARG;
     if (!(request = new_store_request( product_query_work, id ))) return E_OUTOFMEMORY;
     request->query = type;
+    request->page_size = page_size;
     request->kinds = kinds;
     if (ids_count)
     {
@@ -443,7 +707,7 @@ static HRESULT WINAPI x_store_XStoreQueryAssociatedProductsAsync( IXStoreImpl6 *
     TRACE( "iface %p, storeContextHandle %p, productKinds %#x, maxItemsToRetrievePerPage %u, async %p.\n", iface, storeContextHandle, productKinds, maxItemsToRetrievePerPage, async );
 
     if (!storeContextHandle) return E_INVALIDARG;
-    return begin_product_query( async, QUERY_ASSOCIATED, productKinds, NULL, NULL, 0, x_store_XStoreQueryAssociatedProductsAsync, "XStoreQueryAssociatedProductsAsync" );
+    return begin_product_query( async, QUERY_ASSOCIATED, productKinds, NULL, NULL, 0, maxItemsToRetrievePerPage, x_store_XStoreQueryAssociatedProductsAsync, "XStoreQueryAssociatedProductsAsync" );
 }
 
 static HRESULT WINAPI x_store_XStoreQueryAssociatedProductsResult( IXStoreImpl6 *iface, XAsyncBlock *async, XStoreProductQueryHandle *productQueryHandle )
@@ -460,7 +724,7 @@ static HRESULT WINAPI x_store_XStoreQueryProductsAsync( IXStoreImpl6 *iface, con
 
     if (!storeContextHandle || (storeIdsCount && !storeIds)) return E_INVALIDARG;
     for (i = 0; i < storeIdsCount; i++) if (!storeIds[i]) return E_INVALIDARG;
-    return begin_product_query( async, QUERY_STORE_IDS, productKinds, NULL, storeIds, storeIdsCount, x_store_XStoreQueryProductsAsync, "XStoreQueryProductsAsync" );
+    return begin_product_query( async, QUERY_STORE_IDS, productKinds, NULL, storeIds, storeIdsCount, 0, x_store_XStoreQueryProductsAsync, "XStoreQueryProductsAsync" );
 }
 
 static HRESULT WINAPI x_store_XStoreQueryProductsResult( IXStoreImpl6 *iface, XAsyncBlock *async, XStoreProductQueryHandle *productQueryHandle )
@@ -474,7 +738,7 @@ static HRESULT WINAPI x_store_XStoreQueryEntitledProductsAsync( IXStoreImpl6 *if
     TRACE( "iface %p, storeContextHandle %p, productKinds %#x, maxItemsToRetrievePerPage %u, async %p.\n", iface, storeContextHandle, productKinds, maxItemsToRetrievePerPage, async );
 
     if (!storeContextHandle) return E_INVALIDARG;
-    return begin_product_query( async, QUERY_ENTITLED, productKinds, NULL, NULL, 0, x_store_XStoreQueryEntitledProductsAsync, "XStoreQueryEntitledProductsAsync" );
+    return begin_product_query( async, QUERY_ENTITLED, productKinds, NULL, NULL, 0, maxItemsToRetrievePerPage, x_store_XStoreQueryEntitledProductsAsync, "XStoreQueryEntitledProductsAsync" );
 }
 
 static HRESULT WINAPI x_store_XStoreQueryEntitledProductsResult( IXStoreImpl6 *iface, XAsyncBlock *async, XStoreProductQueryHandle *productQueryHandle )
@@ -488,7 +752,7 @@ static HRESULT WINAPI x_store_XStoreQueryProductForCurrentGameAsync( IXStoreImpl
     TRACE( "iface %p, storeContextHandle %p, async %p.\n", iface, storeContextHandle, async );
 
     if (!storeContextHandle) return E_INVALIDARG;
-    return begin_product_query( async, QUERY_CURRENT_GAME, XStoreProductKind_Game, NULL, NULL, 0, x_store_XStoreQueryProductForCurrentGameAsync, "XStoreQueryProductForCurrentGameAsync" );
+    return begin_product_query( async, QUERY_CURRENT_GAME, XStoreProductKind_Game, NULL, NULL, 0, 0, x_store_XStoreQueryProductForCurrentGameAsync, "XStoreQueryProductForCurrentGameAsync" );
 }
 
 static HRESULT WINAPI x_store_XStoreQueryProductForCurrentGameResult( IXStoreImpl6 *iface, XAsyncBlock *async, XStoreProductQueryHandle *productQueryHandle )
@@ -502,7 +766,7 @@ static HRESULT WINAPI x_store_XStoreQueryProductForPackageAsync( IXStoreImpl6 *i
     TRACE( "iface %p, storeContextHandle %p, productKinds %#x, packageIdentifier %s, async %p.\n", iface, storeContextHandle, productKinds, debugstr_a( packageIdentifier ), async );
 
     if (!storeContextHandle || !packageIdentifier) return E_INVALIDARG;
-    return begin_product_query( async, QUERY_PACKAGE, productKinds, packageIdentifier, NULL, 0, x_store_XStoreQueryProductForPackageAsync, "XStoreQueryProductForPackageAsync" );
+    return begin_product_query( async, QUERY_PACKAGE, productKinds, packageIdentifier, NULL, 0, 0, x_store_XStoreQueryProductForPackageAsync, "XStoreQueryProductForPackageAsync" );
 }
 
 static HRESULT WINAPI x_store_XStoreQueryProductForPackageResult( IXStoreImpl6 *iface, XAsyncBlock *async, XStoreProductQueryHandle *productQueryHandle )
@@ -519,26 +783,40 @@ static HRESULT WINAPI x_store_XStoreEnumerateProductsQuery( IXStoreImpl6 *iface,
     TRACE( "iface %p, productQueryHandle %p, context %p, callback %p.\n", iface, productQueryHandle, context, callback );
 
     if (!query || !callback) return E_INVALIDARG;
-    for (i = 0; i < query->count; i++) if (!callback( &query->products[i], context )) break;
+    for (i = 0; i < query->count; i++) if (!callback( &query->set->products[query->first + i], context )) break;
     return S_OK;
 }
 
 static BOOLEAN WINAPI x_store_XStoreProductsQueryHasMorePages( IXStoreImpl6 *iface, const XStoreProductQueryHandle productQueryHandle )
 {
+    struct product_query *query = product_query_from_handle( productQueryHandle );
+
     TRACE( "iface %p, productQueryHandle %p.\n", iface, productQueryHandle );
-    return FALSE;
+    return query && query->first + query->count < query->set->count;
 }
 
 static HRESULT WINAPI x_store_XStoreProductsQueryNextPageAsync( IXStoreImpl6 *iface, const XStoreProductQueryHandle productQueryHandle, XAsyncBlock *async )
 {
-    FIXME( "iface %p, productQueryHandle %p, async %p stub!\n", iface, productQueryHandle, async );
-    return E_NOTIMPL;
+    struct product_query *query = product_query_from_handle( productQueryHandle );
+    struct store_request *request;
+
+    TRACE( "iface %p, productQueryHandle %p, async %p.\n", iface, productQueryHandle, async );
+
+    if (!query || !async) return E_INVALIDARG;
+    if (!(request = new_store_request( next_page_work, NULL ))) return E_OUTOFMEMORY;
+    InterlockedIncrement( &query->set->ref );
+    request->set = query->set;
+    request->first = query->first + query->count;
+    request->page_size = query->page_size;
+    return begin_store_request( async, request, x_store_XStoreProductsQueryNextPageAsync, "XStoreProductsQueryNextPageAsync" );
 }
 
 static HRESULT WINAPI x_store_XStoreProductsQueryNextPageResult( IXStoreImpl6 *iface, XAsyncBlock *async, XStoreProductQueryHandle *productQueryHandle )
 {
-    FIXME( "iface %p, async %p, productQueryHandle %p stub!\n", iface, async, productQueryHandle );
-    return E_NOTIMPL;
+    TRACE( "iface %p, async %p, productQueryHandle %p.\n", iface, async, productQueryHandle );
+
+    if (!productQueryHandle) return E_INVALIDARG;
+    return IXThreadingImpl_XAsyncGetResult( x_threading_impl, async, x_store_XStoreProductsQueryNextPageAsync, sizeof(*productQueryHandle), productQueryHandle, NULL );
 }
 
 static void WINAPI x_store_XStoreCloseProductsQueryHandle( IXStoreImpl6 *iface, XStoreProductQueryHandle productQueryHandle )
@@ -591,6 +869,29 @@ static HRESULT store_id_licensed( const char *store_id, BOOL *licensed, BOOL *fo
         hr = gdkc_addon_license( addon, licensed );
     }
     gdkc_addons_release( addons );
+
+    /* Not installed, or an unlock without files: whether the user owns it. */
+    if (SUCCEEDED(hr) && !*found && valid_product_id( store_id ) && gdkc_bridge_available())
+    {
+        struct store_request request = { .query = QUERY_STORE_IDS, .kinds = XStoreProductKind_Durable | XStoreProductKind_Game,
+                                         .ids = (char **)&store_id, .ids_count = 1 };
+        struct product_set set = {0};
+        char *listed;
+        UINT32 i;
+
+        if ((listed = ask_products( &request )))
+        {
+            hr = add_listed_products( &set, listed, &request );
+            free( listed );
+            if (set.count)
+            {
+                *found = TRUE;
+                *licensed = set.products[0].isInUserCollection;
+            }
+            for (i = 0; i < set.count; i++) free_product( &set.products[i] );
+            free( set.products );
+        }
+    }
     return hr;
 }
 
@@ -853,64 +1154,164 @@ static HRESULT WINAPI x_store_XStoreQueryAddOnLicensesResult( IXStoreImpl6 *ifac
     return IXThreadingImpl_XAsyncGetResult( x_threading_impl, async, x_store_XStoreQueryAddOnLicensesAsync, count * sizeof(*addOnLicenses), addOnLicenses, NULL );
 }
 
+/* Consumables and keys: the bridge asks the Store for the signed in user. */
+static HRESULT set_quantity_result( struct store_request *request, HRESULT hr, char *response )
+{
+    XStoreConsumableResult *result;
+
+    if (FAILED(hr)) return hr == HRESULT_FROM_WIN32( ERROR_BAD_NET_RESP ) ? E_GAMESTORE_SERVER_ERROR : hr;
+    if (!isdigit( (unsigned char)*response )) hr = E_GAMESTORE_SERVER_ERROR;
+    else if (!(result = calloc( 1, sizeof(*result) ))) hr = E_OUTOFMEMORY;
+    else
+    {
+        result->quantity = strtoul( response, NULL, 10 );
+        request->result = result;
+        request->result_size = sizeof(*result);
+    }
+    free( response );
+    return hr;
+}
+
+static HRESULT consumable_balance_work( struct store_request *request )
+{
+    char *response = NULL;
+    HRESULT hr = gdkc_bridge_post( L"/store/consumable", request->id, &response );
+
+    return set_quantity_result( request, hr, response );
+}
+
+static HRESULT consume_work( struct store_request *request )
+{
+    const GUID *id = &request->tracking_id;
+    char body[128], *response = NULL;
+    HRESULT hr;
+
+    snprintf( body, sizeof(body), "%s\n%u\n%08lx-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x\n", request->id, request->quantity,
+              id->Data1, id->Data2, id->Data3, id->Data4[0], id->Data4[1], id->Data4[2], id->Data4[3], id->Data4[4],
+              id->Data4[5], id->Data4[6], id->Data4[7] );
+    hr = gdkc_bridge_post( L"/store/consume", body, &response );
+    return set_quantity_result( request, hr, response );
+}
+
+/* request->id is the body. */
+static HRESULT user_key_work( struct store_request *request )
+{
+    char *response = NULL;
+    HRESULT hr;
+
+    if (FAILED(hr = gdkc_bridge_post( L"/store/user-key", request->id, &response )))
+        return hr == HRESULT_FROM_WIN32( ERROR_BAD_NET_RESP ) ? E_GAMESTORE_SERVER_ERROR : hr;
+    request->result = response;
+    request->result_size = strlen( response ) + 1;
+    return S_OK;
+}
+
+static HRESULT begin_user_key( XAsyncBlock *async, const char *type, const char *ticket, const char *user, const void *identity, const char *name )
+{
+    struct store_request *request;
+    SIZE_T size;
+    char *body;
+
+    if (!async || !ticket || !*ticket || strpbrk( ticket, "\r\n" )) return E_INVALIDARG;
+    if (!user) user = "";
+    if (strpbrk( user, "\r\n" )) return E_INVALIDARG;
+    size = strlen( type ) + strlen( ticket ) + strlen( user ) + 4;
+    if (!(body = malloc( size ))) return E_OUTOFMEMORY;
+    snprintf( body, size, "%s\n%s\n%s\n", type, ticket, user );
+    request = new_store_request( user_key_work, body );
+    free( body );
+    if (!request) return E_OUTOFMEMORY;
+    return begin_store_request( async, request, identity, name );
+}
+
 static HRESULT WINAPI x_store_XStoreQueryConsumableBalanceRemainingAsync( IXStoreImpl6 *iface, const XStoreContextHandle storeContextHandle, const char *storeProductId, XAsyncBlock *async )
 {
-    FIXME( "iface %p, storeContextHandle %p, storeProductId %s, async %p stub!\n", iface, storeContextHandle, debugstr_a( storeProductId ), async );
-    return E_NOTIMPL;
+    struct store_request *request;
+
+    TRACE( "iface %p, storeContextHandle %p, storeProductId %s, async %p.\n", iface, storeContextHandle, debugstr_a( storeProductId ), async );
+
+    if (!storeContextHandle || !valid_product_id( storeProductId ) || !async) return E_INVALIDARG;
+    if (!(request = new_store_request( consumable_balance_work, storeProductId ))) return E_OUTOFMEMORY;
+    return begin_store_request( async, request, x_store_XStoreQueryConsumableBalanceRemainingAsync, "XStoreQueryConsumableBalanceRemainingAsync" );
 }
 
 static HRESULT WINAPI x_store_XStoreQueryConsumableBalanceRemainingResult( IXStoreImpl6 *iface, XAsyncBlock *async, XStoreConsumableResult *consumableResult )
 {
-    FIXME( "iface %p, async %p, consumableResult %p stub!\n", iface, async, consumableResult );
-    return E_NOTIMPL;
+    TRACE( "iface %p, async %p, consumableResult %p.\n", iface, async, consumableResult );
+
+    if (!consumableResult) return E_INVALIDARG;
+    return IXThreadingImpl_XAsyncGetResult( x_threading_impl, async, x_store_XStoreQueryConsumableBalanceRemainingAsync, sizeof(*consumableResult), consumableResult, NULL );
 }
 
 static HRESULT WINAPI x_store_XStoreReportConsumableFulfillmentAsync( IXStoreImpl6 *iface, const XStoreContextHandle storeContextHandle, const char *storeProductId, UINT32 quantity, GUID trackingId, XAsyncBlock *async )
 {
-    FIXME( "iface %p, storeContextHandle %p, storeProductId %s, quantity %u, trackingId %s, async %p stub!\n", iface, storeContextHandle, debugstr_a( storeProductId ), quantity, debugstr_guid( &trackingId ), async );
-    return E_NOTIMPL;
+    struct store_request *request;
+
+    TRACE( "iface %p, storeContextHandle %p, storeProductId %s, quantity %u, trackingId %s, async %p.\n", iface, storeContextHandle, debugstr_a( storeProductId ), quantity, debugstr_guid( &trackingId ), async );
+
+    if (!storeContextHandle || !valid_product_id( storeProductId ) || !quantity || !async) return E_INVALIDARG;
+    if (!(request = new_store_request( consume_work, storeProductId ))) return E_OUTOFMEMORY;
+    request->quantity = quantity;
+    request->tracking_id = trackingId;
+    return begin_store_request( async, request, x_store_XStoreReportConsumableFulfillmentAsync, "XStoreReportConsumableFulfillmentAsync" );
 }
 
 static HRESULT WINAPI x_store_XStoreReportConsumableFulfillmentResult( IXStoreImpl6 *iface, XAsyncBlock *async, XStoreConsumableResult *consumableResult )
 {
-    FIXME( "iface %p, async %p, consumableResult %p stub!\n", iface, async, consumableResult );
-    return E_NOTIMPL;
+    TRACE( "iface %p, async %p, consumableResult %p.\n", iface, async, consumableResult );
+
+    if (!consumableResult) return E_INVALIDARG;
+    return IXThreadingImpl_XAsyncGetResult( x_threading_impl, async, x_store_XStoreReportConsumableFulfillmentAsync, sizeof(*consumableResult), consumableResult, NULL );
 }
 
 static HRESULT WINAPI x_store_XStoreGetUserCollectionsIdAsync( IXStoreImpl6 *iface, const XStoreContextHandle storeContextHandle, const char *serviceTicket, const char *publisherUserId, XAsyncBlock *async )
 {
-    FIXME( "iface %p, storeContextHandle %p, serviceTicket %s, userId %s, async %p stub!\n", iface, storeContextHandle, debugstr_a( serviceTicket ), debugstr_a( publisherUserId ), async );
-    return E_NOTIMPL;
+    /* The service ticket is a secret of the game. */
+    TRACE( "iface %p, storeContextHandle %p, async %p.\n", iface, storeContextHandle, async );
+
+    if (!storeContextHandle) return E_INVALIDARG;
+    return begin_user_key( async, "collections", serviceTicket, publisherUserId, x_store_XStoreGetUserCollectionsIdAsync, "XStoreGetUserCollectionsIdAsync" );
 }
 
 static HRESULT WINAPI x_store_XStoreGetUserCollectionsIdResultSize( IXStoreImpl6 *iface, XAsyncBlock *async, SIZE_T *size )
 {
-    FIXME( "iface %p, async %p, size %p stub!\n", iface, async, size );
-    return E_NOTIMPL;
+    TRACE( "iface %p, async %p, size %p.\n", iface, async, size );
+
+    if (!size) return E_INVALIDARG;
+    return IXThreadingImpl_XAsyncGetResultSize( x_threading_impl, async, size );
 }
 
 static HRESULT WINAPI x_store_XStoreGetUserCollectionsIdResult( IXStoreImpl6 *iface, XAsyncBlock *async, SIZE_T size, char *result )
 {
-    FIXME( "iface %p, async %p, size %Iu, result %p stub!\n", iface, async, size, result );
-    return E_NOTIMPL;
+    TRACE( "iface %p, async %p, size %Iu, result %p.\n", iface, async, size, result );
+
+    if (!result) return E_INVALIDARG;
+    return IXThreadingImpl_XAsyncGetResult( x_threading_impl, async, x_store_XStoreGetUserCollectionsIdAsync, size, result, NULL );
 }
 
 static HRESULT WINAPI x_store_XStoreGetUserPurchaseIdAsync( IXStoreImpl6 *iface, const XStoreContextHandle storeContextHandle, const char *serviceTicket, const char *publisherUserId, XAsyncBlock *async )
 {
-    FIXME( "iface %p, storeContextHandle %p, serviceTicket %s, publisherUserId %s, async %p stub!\n", iface, storeContextHandle, debugstr_a( serviceTicket ), debugstr_a( publisherUserId ), async );
-    return E_NOTIMPL;
+    /* The service ticket is a secret of the game. */
+    TRACE( "iface %p, storeContextHandle %p, async %p.\n", iface, storeContextHandle, async );
+
+    if (!storeContextHandle) return E_INVALIDARG;
+    return begin_user_key( async, "purchase", serviceTicket, publisherUserId, x_store_XStoreGetUserPurchaseIdAsync, "XStoreGetUserPurchaseIdAsync" );
 }
 
 static HRESULT WINAPI x_store_XStoreGetUserPurchaseIdResultSize( IXStoreImpl6 *iface, XAsyncBlock *async, SIZE_T *size )
 {
-    FIXME( "iface %p, async %p, size %p stub!\n", iface, async, size );
-    return E_NOTIMPL;
+    TRACE( "iface %p, async %p, size %p.\n", iface, async, size );
+
+    if (!size) return E_INVALIDARG;
+    return IXThreadingImpl_XAsyncGetResultSize( x_threading_impl, async, size );
 }
 
 static HRESULT WINAPI x_store_XStoreGetUserPurchaseIdResult( IXStoreImpl6 *iface, XAsyncBlock *async, SIZE_T size, char *result )
 {
-    FIXME( "iface %p, async %p, size %Iu, result %p stub!\n", iface, async, size, result );
-    return E_NOTIMPL;
+    TRACE( "iface %p, async %p, size %Iu, result %p.\n", iface, async, size, result );
+
+    if (!result) return E_INVALIDARG;
+    return IXThreadingImpl_XAsyncGetResult( x_threading_impl, async, x_store_XStoreGetUserPurchaseIdAsync, size, result, NULL );
 }
 
 /*
@@ -1043,6 +1444,8 @@ static HRESULT WINAPI __PADDING_3__( IXStoreImpl6 *iface )
 
 /* Store dialogs have no Linux counterpart: open the product page in the host browser instead and
  * report the dialog as closed. Games treat a failing call here as fatal (Planet Coaster 2). */
+#define REDEEM_PAGE "redeem:"
+
 static void open_store_page( const char *storeId )
 {
     char cmd[160];
@@ -1051,9 +1454,12 @@ static void open_store_page( const char *storeId )
     const char *c;
 
     if (!storeId || !*storeId || strlen( storeId ) > 32) return;
-    for (c = storeId; *c; c++) if (!isalnum( (unsigned char)*c )) return;
-
-    sprintf( cmd, "winebrowser.exe https://www.microsoft.com/store/productId/%s", storeId );
+    if (!strcmp( storeId, REDEEM_PAGE )) strcpy( cmd, "winebrowser.exe https://redeem.microsoft.com/" );
+    else
+    {
+        for (c = storeId; *c; c++) if (!isalnum( (unsigned char)*c )) return;
+        sprintf( cmd, "winebrowser.exe https://www.microsoft.com/store/productId/%s", storeId );
+    }
     if (!CreateProcessA( NULL, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi ))
     {
         WARN( "could not start winebrowser, error %lu.\n", GetLastError() );
@@ -1108,26 +1514,38 @@ static HRESULT WINAPI x_store_XStoreShowPurchaseUIResult( IXStoreImpl6 *iface, X
 
 static HRESULT WINAPI x_store_XStoreShowRateAndReviewUIAsync( IXStoreImpl6 *iface, const XStoreContextHandle storeContextHandle, XAsyncBlock *async )
 {
-    FIXME( "iface %p, storeContextHandle %p, async %p stub!\n", iface, storeContextHandle, async );
-    return E_NOTIMPL;
+    char game[GDKC_STORE_ID_SIZE];
+
+    TRACE( "iface %p, storeContextHandle %p, async %p.\n", iface, storeContextHandle, async );
+
+    if (!storeContextHandle) return E_INVALIDARG;
+    if (!gdkc_config_get_store_id( game, sizeof(game) )) return E_GAMEPACKAGE_NO_STORE_ID;
+    return begin_store_ui( async, game, x_store_XStoreShowRateAndReviewUIAsync, "XStoreShowRateAndReviewUIAsync" );
 }
 
 static HRESULT WINAPI x_store_XStoreShowRateAndReviewUIResult( IXStoreImpl6 *iface, XAsyncBlock *async, XStoreRateAndReviewResult *result )
 {
-    FIXME( "iface %p, async %p, result %p stub!\n", iface, async, result );
-    return E_NOTIMPL;
+    TRACE( "iface %p, async %p, result %p.\n", iface, async, result );
+
+    if (!result) return E_INVALIDARG;
+    /* Whether the player wrote a review in the browser is not known. */
+    result->wasUpdated = FALSE;
+    return IXThreadingImpl_XAsyncGetResult( x_threading_impl, async, x_store_XStoreShowRateAndReviewUIAsync, 0, NULL, NULL );
 }
 
 static HRESULT WINAPI x_store_XStoreShowRedeemTokenUIAsync( IXStoreImpl6 *iface, const XStoreContextHandle storeContextHandle, const char *token, const char **allowedStoreIds, SIZE_T allowedStoreIdsCount, BOOLEAN disallowCsvRedemption, XAsyncBlock *async )
 {
-    FIXME( "iface %p, storeContextHandle %p, token %s, allowedStoreIds %p, allowedStoreIdsCount %Iu, disallowCsvRedemption %d, async %p stub!\n", iface, storeContextHandle, debugstr_a( token ), allowedStoreIds, allowedStoreIdsCount, disallowCsvRedemption, async );
-    return E_NOTIMPL;
+    /* The token is as good as money: it is neither logged nor put into a URL, the player enters it on the page. */
+    TRACE( "iface %p, storeContextHandle %p, allowedStoreIds %p, allowedStoreIdsCount %Iu, disallowCsvRedemption %d, async %p.\n", iface, storeContextHandle, allowedStoreIds, allowedStoreIdsCount, disallowCsvRedemption, async );
+
+    if (!storeContextHandle) return E_INVALIDARG;
+    return begin_store_ui( async, REDEEM_PAGE, x_store_XStoreShowRedeemTokenUIAsync, "XStoreShowRedeemTokenUIAsync" );
 }
 
 static HRESULT WINAPI x_store_XStoreShowRedeemTokenUIResult( IXStoreImpl6 *iface, XAsyncBlock *async )
 {
-    FIXME( "iface %p, async %p stub!\n", iface, async );
-    return E_NOTIMPL;
+    TRACE( "iface %p, async %p.\n", iface, async );
+    return IXThreadingImpl_XAsyncGetResult( x_threading_impl, async, x_store_XStoreShowRedeemTokenUIAsync, 0, NULL, NULL );
 }
 
 /* Updates are managed by Xodus or the Windows Xbox app, never from inside the game. */
@@ -1173,44 +1591,100 @@ static HRESULT WINAPI x_store_XStoreQueryGameAndDlcPackageUpdatesResult( IXStore
 
 static HRESULT WINAPI x_store_XStoreDownloadPackageUpdatesAsync( IXStoreImpl6 *iface, XStoreContextHandle storeContextHandle, const char **packageIdentifiers, SIZE_T packageIdentifiersCount, XAsyncBlock *async )
 {
-    FIXME( "iface %p, storeContextHandle %p, packageIdentifiers %p, packageIdentifiersCount %Iu, async %p stub!\n", iface, storeContextHandle, packageIdentifiers, packageIdentifiersCount, async );
-    return E_NOTIMPL;
+    TRACE( "iface %p, storeContextHandle %p, packageIdentifiers %p, packageIdentifiersCount %Iu, async %p.\n", iface, storeContextHandle, packageIdentifiers, packageIdentifiersCount, async );
+
+    if (!storeContextHandle || !async || (packageIdentifiersCount && !packageIdentifiers)) return E_INVALIDARG;
+    /* No update is ever reported, so there is none to download. */
+    return IXThreadingImpl_XAsyncBegin( x_threading_impl, async, NULL, x_store_XStoreDownloadPackageUpdatesAsync, "XStoreDownloadPackageUpdatesAsync", no_updates_provider );
 }
 
 static HRESULT WINAPI x_store_XStoreDownloadPackageUpdatesResult( IXStoreImpl6 *iface, XAsyncBlock *async )
 {
-    FIXME( "iface %p, async %p stub!\n", iface, async );
-    return E_NOTIMPL;
+    TRACE( "iface %p, async %p.\n", iface, async );
+    return IXThreadingImpl_XAsyncGetResult( x_threading_impl, async, x_store_XStoreDownloadPackageUpdatesAsync, 0, NULL, NULL );
 }
 
 static HRESULT WINAPI x_store_XStoreDownloadAndInstallPackageUpdatesAsync( IXStoreImpl6 *iface, const XStoreContextHandle storeContextHandle, const char **packageIdentifiers, SIZE_T packageIdentifiersCount, XAsyncBlock *async )
 {
-    FIXME( "iface %p, storeContextHandle %p, packageIdentifiers %p, packageIdentifiersCount %Iu, async %p stub!\n", iface, storeContextHandle, packageIdentifiers, packageIdentifiersCount, async );
-    return E_NOTIMPL;
+    TRACE( "iface %p, storeContextHandle %p, packageIdentifiers %p, packageIdentifiersCount %Iu, async %p.\n", iface, storeContextHandle, packageIdentifiers, packageIdentifiersCount, async );
+
+    if (!storeContextHandle || !async || (packageIdentifiersCount && !packageIdentifiers)) return E_INVALIDARG;
+    /* No update is ever reported, so there is none to download. */
+    return IXThreadingImpl_XAsyncBegin( x_threading_impl, async, NULL, x_store_XStoreDownloadAndInstallPackageUpdatesAsync, "XStoreDownloadAndInstallPackageUpdatesAsync", no_updates_provider );
 }
 
 static HRESULT WINAPI x_store_XStoreDownloadAndInstallPackageUpdatesResult( IXStoreImpl6 *iface, XAsyncBlock *async )
 {
-    FIXME( "iface %p, async %p stub!\n", iface, async );
-    return E_NOTIMPL;
+    TRACE( "iface %p, async %p.\n", iface, async );
+    return IXThreadingImpl_XAsyncGetResult( x_threading_impl, async, x_store_XStoreDownloadAndInstallPackageUpdatesAsync, 0, NULL, NULL );
+}
+
+/* Xodus installs add-ons, not the game: the ones that are there already are answered, for others it fails. */
+static HRESULT install_packages_work( struct store_request *request )
+{
+    char (*result)[GDKC_PACKAGE_ID_SIZE];
+    const struct gdkc_addon *addon;
+    struct gdkc_addons *addons;
+    HRESULT hr;
+    SIZE_T i;
+
+    if (FAILED(hr = gdkc_addons_get( &addons ))) return hr;
+    if (!(result = calloc( request->ids_count, sizeof(*result) ))) hr = E_OUTOFMEMORY;
+    for (i = 0; SUCCEEDED(hr) && i < request->ids_count; i++)
+    {
+        if ((addon = gdkc_addons_find( addons, request->ids[i] ))) strcpy( result[i], addon->package_id );
+        else
+        {
+            WARN( "%s is not installed, install it with Xodus.\n", debugstr_a( request->ids[i] ) );
+            hr = E_GAMEPACKAGE_DOWNLOAD_REQUIRED;
+        }
+    }
+    gdkc_addons_release( addons );
+    if (FAILED(hr))
+    {
+        free( result );
+        return hr;
+    }
+    request->result = result;
+    request->result_size = request->ids_count * sizeof(*result);
+    return S_OK;
 }
 
 static HRESULT WINAPI x_store_XStoreDownloadAndInstallPackagesAsync( IXStoreImpl6 *iface, const XStoreContextHandle storeContextHandle, const char **storeIds, SIZE_T storeIdsCount, XAsyncBlock *async )
 {
-    FIXME( "iface %p, storeContextHandle %p, storeIds %p, storeIdsCount %Iu, async %p stub!\n", iface, storeContextHandle, storeIds, storeIdsCount, async );
-    return E_NOTIMPL;
+    struct store_request *request;
+    SIZE_T i;
+
+    TRACE( "iface %p, storeContextHandle %p, storeIds %p, storeIdsCount %Iu, async %p.\n", iface, storeContextHandle, storeIds, storeIdsCount, async );
+
+    if (!storeContextHandle || !async || !storeIds || !storeIdsCount) return E_INVALIDARG;
+    for (i = 0; i < storeIdsCount; i++) if (!storeIds[i]) return E_INVALIDARG;
+    if (!(request = new_store_request( install_packages_work, NULL ))) return E_OUTOFMEMORY;
+    if (!(request->ids = calloc( storeIdsCount, sizeof(*request->ids) ))) { free_store_request( request ); return E_OUTOFMEMORY; }
+    for (i = 0; i < storeIdsCount; i++, request->ids_count++)
+        if (!(request->ids[i] = strdup( storeIds[i] ))) { free_store_request( request ); return E_OUTOFMEMORY; }
+    return begin_store_request( async, request, x_store_XStoreDownloadAndInstallPackagesAsync, "XStoreDownloadAndInstallPackagesAsync" );
 }
 
 static HRESULT WINAPI x_store_XStoreDownloadAndInstallPackagesResultCount( IXStoreImpl6 *iface, XAsyncBlock *async, UINT32 *count )
 {
-    FIXME( "iface %p, async %p, count %p stub!\n", iface, async, count );
-    return E_NOTIMPL;
+    SIZE_T size;
+    HRESULT hr;
+
+    TRACE( "iface %p, async %p, count %p.\n", iface, async, count );
+
+    if (!count) return E_INVALIDARG;
+    if (FAILED(hr = IXThreadingImpl_XAsyncGetResultSize( x_threading_impl, async, &size ))) return hr;
+    *count = size / GDKC_PACKAGE_ID_SIZE;
+    return S_OK;
 }
 
 static HRESULT WINAPI x_store_XStoreDownloadAndInstallPackagesResult( IXStoreImpl6 *iface, XAsyncBlock *async, UINT32 count, char **packageIdentifiers )
 {
-    FIXME( "iface %p, async %p, count %u, packageIdentifiers %p stub!\n", iface, async, count, packageIdentifiers );
-    return E_NOTIMPL;
+    TRACE( "iface %p, async %p, count %u, packageIdentifiers %p.\n", iface, async, count, packageIdentifiers );
+
+    if (count && !packageIdentifiers) return E_INVALIDARG;
+    return IXThreadingImpl_XAsyncGetResult( x_threading_impl, async, x_store_XStoreDownloadAndInstallPackagesAsync, count * GDKC_PACKAGE_ID_SIZE, packageIdentifiers, NULL );
 }
 
 static HRESULT WINAPI x_store_XStoreQueryPackageIdentifier( IXStoreImpl6 *iface, const char *storeId, SIZE_T size, char *packageIdentifier )
@@ -1280,20 +1754,42 @@ static BOOLEAN WINAPI x_store_XStoreUnregisterPackageLicenseLost( IXStoreImpl6 *
 
 static BOOLEAN WINAPI x_store_XStoreIsAvailabilityPurchasable( IXStoreImpl6 *iface, const XStoreAvailability availability )
 {
-    FIXME( "iface %p, availability %p stub!\n", iface, &availability );
-    return FALSE;
+    TRACE( "iface %p, availability %s.\n", iface, debugstr_a( availability.availabilityId ) );
+    /* Only offers that can be bought are handed out. */
+    return availability.availabilityId && *availability.availabilityId && availability.endDate > time( NULL );
+}
+
+static HRESULT acquire_durable_license_work( struct store_request *request )
+{
+    struct store_license *license;
+    BOOL licensed, found;
+    HRESULT hr;
+
+    if (FAILED(hr = store_id_licensed( request->id, &licensed, &found ))) return hr;
+    if (!found) return HRESULT_FROM_WIN32( ERROR_NOT_FOUND );
+    if (!(license = calloc( 1, sizeof(*license) ))) return E_OUTOFMEMORY;
+    license->magic = LICENSE_MAGIC;
+    license->valid = licensed;
+    return set_handle_result( request, license, free_license );
 }
 
 static HRESULT WINAPI x_store_XStoreAcquireLicenseForDurablesAsync( IXStoreImpl6 *iface, const XStoreContextHandle storeContextHandle, const char *storeId, XAsyncBlock *async )
 {
-    FIXME( "iface %p, storeContextHandle %p, storeId %s, async %p stub!\n", iface, storeContextHandle, debugstr_a( storeId ), async );
-    return E_NOTIMPL;
+    struct store_request *request;
+
+    TRACE( "iface %p, storeContextHandle %p, storeId %s, async %p.\n", iface, storeContextHandle, debugstr_a( storeId ), async );
+
+    if (!storeContextHandle || !valid_product_id( storeId ) || !async) return E_INVALIDARG;
+    if (!(request = new_store_request( acquire_durable_license_work, storeId ))) return E_OUTOFMEMORY;
+    return begin_store_request( async, request, x_store_XStoreAcquireLicenseForDurablesAsync, "XStoreAcquireLicenseForDurablesAsync" );
 }
 
 static HRESULT WINAPI x_store_XStoreAcquireLicenseForDurablesResult( IXStoreImpl6 *iface, XAsyncBlock *async, XStoreLicenseHandle *storeLicenseHandle )
 {
-    FIXME( "iface %p, async %p, storeLicenseHandle %p stub!\n", iface, async, storeLicenseHandle );
-    return E_NOTIMPL;
+    TRACE( "iface %p, async %p, storeLicenseHandle %p.\n", iface, async, storeLicenseHandle );
+
+    if (!storeLicenseHandle) return E_INVALIDARG;
+    return IXThreadingImpl_XAsyncGetResult( x_threading_impl, async, x_store_XStoreAcquireLicenseForDurablesAsync, sizeof(*storeLicenseHandle), storeLicenseHandle, NULL );
 }
 
 static HRESULT WINAPI x_store_XStoreShowAssociatedProductsUIAsync( IXStoreImpl6 *iface, const XStoreContextHandle storeContextHandle, const char *storeId, XStoreProductKind productKinds, XAsyncBlock *async )
@@ -1322,44 +1818,54 @@ static HRESULT WINAPI x_store_XStoreShowProductPageUIResult( IXStoreImpl6 *iface
 
 static HRESULT WINAPI x_store_XStoreQueryAssociatedProductsForStoreIdAsync( IXStoreImpl6 *iface, const XStoreContextHandle storeContextHandle, const char *storeId, XStoreProductKind productKinds, UINT32 maxItemsToRetrievePerPage, XAsyncBlock *async )
 {
-    FIXME( "iface %p, storeContextHandle %p, storeId %s, productKinds %#x, maxItemsToRetrievePerPage %u, async %p stub!\n", iface, storeContextHandle, debugstr_a( storeId ), productKinds, maxItemsToRetrievePerPage, async );
-    return E_NOTIMPL;
+    TRACE( "iface %p, storeContextHandle %p, storeId %s, productKinds %#x, maxItemsToRetrievePerPage %u, async %p.\n", iface, storeContextHandle, debugstr_a( storeId ), productKinds, maxItemsToRetrievePerPage, async );
+
+    if (!storeContextHandle || !valid_product_id( storeId )) return E_INVALIDARG;
+    return begin_product_query( async, QUERY_STORE_ID_ADDONS, productKinds, storeId, NULL, 0, maxItemsToRetrievePerPage, x_store_XStoreQueryAssociatedProductsForStoreIdAsync, "XStoreQueryAssociatedProductsForStoreIdAsync" );
 }
 
 static HRESULT WINAPI x_store_XStoreQueryAssociatedProductsForStoreIdResult( IXStoreImpl6 *iface, XAsyncBlock *async, XStoreProductQueryHandle *productQueryHandle )
 {
-    FIXME( "iface %p, async %p, productQueryHandle %p stub!\n", iface, async, productQueryHandle );
-    return E_NOTIMPL;
+    TRACE( "iface %p, async %p, productQueryHandle %p.\n", iface, async, productQueryHandle );
+    return get_product_query_result( async, x_store_XStoreQueryAssociatedProductsForStoreIdAsync, productQueryHandle );
 }
 
 static HRESULT WINAPI x_store_XStoreQueryPackageUpdatesAsync( IXStoreImpl6 *iface, XStoreContextHandle storeContextHandle, const char **packageIdentifiers, SIZE_T packageIdentifiersCount, XAsyncBlock *async )
 {
-    FIXME( "iface %p, storeContextHandle %p, packageIdentifiers %p, packageIdentifiersCount %Iu, async %p stub!\n", iface, storeContextHandle, packageIdentifiers, packageIdentifiersCount, async );
-    return E_NOTIMPL;
+    TRACE( "iface %p, storeContextHandle %p, packageIdentifiers %p, packageIdentifiersCount %Iu, async %p.\n", iface, storeContextHandle, packageIdentifiers, packageIdentifiersCount, async );
+
+    if (!storeContextHandle || !async || (packageIdentifiersCount && !packageIdentifiers)) return E_INVALIDARG;
+    return IXThreadingImpl_XAsyncBegin( x_threading_impl, async, NULL, x_store_XStoreQueryPackageUpdatesAsync, "XStoreQueryPackageUpdatesAsync", no_updates_provider );
 }
 
 static HRESULT WINAPI x_store_XStoreQueryPackageUpdatesResultCount( IXStoreImpl6 *iface, XAsyncBlock *async, UINT32 *count )
 {
-    FIXME( "iface %p, async %p, count %p stub!\n", iface, async, count );
-    return E_NOTIMPL;
+    HRESULT hr;
+
+    TRACE( "iface %p, async %p, count %p.\n", iface, async, count );
+
+    if (!count) return E_INVALIDARG;
+    if (FAILED(hr = IXThreadingImpl_XAsyncGetStatus( x_threading_impl, async, FALSE ))) return hr;
+    *count = 0;
+    return S_OK;
 }
 
 static HRESULT WINAPI x_store_XStoreQueryPackageUpdatesResult( IXStoreImpl6 *iface, XAsyncBlock *async, UINT32 count, XStorePackageUpdate *packageUpdates )
 {
-    FIXME( "iface %p, async %p, count %u, packageUpdates %p stub!\n", iface, async, count, packageUpdates );
-    return E_NOTIMPL;
+    TRACE( "iface %p, async %p, count %u, packageUpdates %p.\n", iface, async, count, packageUpdates );
+    return IXThreadingImpl_XAsyncGetResult( x_threading_impl, async, x_store_XStoreQueryPackageUpdatesAsync, 0, NULL, NULL );
 }
 
 static HRESULT WINAPI x_store_XStoreShowGiftingUIAsync( IXStoreImpl6 *iface, const XStoreContextHandle storeContextHandle, const char *storeId, const char *name, const char *extendedJsonData, XAsyncBlock *async )
 {
-    FIXME( "iface %p, storeContextHandle %p, storeId %s, name %s, extendedJsonData %s, async %p stub!\n", iface, storeContextHandle, debugstr_a( storeId ), debugstr_a( name ), debugstr_a( extendedJsonData ), async );
-    return E_NOTIMPL;
+    TRACE( "iface %p, storeContextHandle %p, storeId %s, name %s, extendedJsonData %s, async %p.\n", iface, storeContextHandle, debugstr_a( storeId ), debugstr_a( name ), debugstr_a( extendedJsonData ), async );
+    return begin_store_ui( async, storeId, x_store_XStoreShowGiftingUIAsync, "XStoreShowGiftingUIAsync" );
 }
 
 static HRESULT WINAPI x_store_XStoreShowGiftingUIResult( IXStoreImpl6 *iface, XAsyncBlock *async )
 {
-    FIXME( "iface %p, async %p stub!\n", iface, async );
-    return E_NOTIMPL;
+    TRACE( "iface %p, async %p.\n", iface, async );
+    return IXThreadingImpl_XAsyncGetResult( x_threading_impl, async, x_store_XStoreShowGiftingUIAsync, 0, NULL, NULL );
 }
 
 static const struct IXStoreImpl6Vtbl x_store_vtbl =
