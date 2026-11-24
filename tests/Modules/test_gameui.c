@@ -123,15 +123,16 @@ static int dialogs( XTaskQueueHandle queue, XUserHandle user )
 
     memset( &async, 0, sizeof(async) );
     async.queue = queue;
-    CHECK_HR( IXGameUiImpl4_XGameUiShowTextEntryAsync( ui, &async, "Entry", "Name?", "old", XGameUiTextEntryInputScope_Default, 20 ), S_OK );
+    CHECK_HR( IXGameUiImpl4_XGameUiShowTextEntryAsync( ui, &async, "Entry", "Name?", "old", XGameUiTextEntryInputScope_Default, 5 ), S_OK );
     CHECK( (hwnd = wait_window( L"Entry" )) && has_text( hwnd, L"old" ) );
-    SetDlgItemTextW( hwnd, 200, L"näw" );
+    SetDlgItemTextW( hwnd, 200, L"näää" );
     PostMessageW( hwnd, WM_COMMAND, 100, 0 );
     CHECK_HR( IXThreadingImpl_XAsyncGetStatus( threading, &async, TRUE ), S_OK );
     CHECK_HR( IXGameUiImpl4_XGameUiShowTextEntryResultSize( ui, &async, &size ), S_OK );
-    CHECK( size == 5 );
+    CHECK( size == 6 );
+    CHECK_HR( IXGameUiImpl4_XGameUiShowTextEntryResult( ui, &async, 5, text, &used ), HRESULT_FROM_WIN32( ERROR_INSUFFICIENT_BUFFER ) );
     CHECK_HR( IXGameUiImpl4_XGameUiShowTextEntryResult( ui, &async, sizeof(text), text, &used ), S_OK );
-    CHECK( used == 5 && !strcmp( text, "n\xc3\xa4w" ) );
+    CHECK( used == 6 && !strcmp( text, "n\xc3\xa4\xc3\xa4" ) );
     memset( &async, 0, sizeof(async) );
     async.queue = queue;
     CHECK_HR( IXGameUiImpl4_XGameUiShowTextEntryAsync( ui, &async, "Entry", NULL, NULL, 0, 20 ), S_OK );
@@ -257,6 +258,7 @@ static int picture( IXUserImpl *users, XTaskQueueHandle queue, XUserHandle user 
     CHECK_HR( IXThreadingImpl_XAsyncGetStatus( threading, &async, TRUE ), S_OK );
     CHECK_HR( IXUserImpl_XUserGetGamerPictureResultSize( users, &async, &size ), S_OK );
     CHECK( size == 769 );
+    CHECK_HR( IXUserImpl_XUserGetGamerPictureResult( users, &async, 100, buffer, &used ), HRESULT_FROM_WIN32( ERROR_INSUFFICIENT_BUFFER ) );
     CHECK_HR( IXUserImpl_XUserGetGamerPictureResult( users, &async, sizeof(buffer), buffer, &used ), S_OK );
     CHECK( used == size && buffer[768] == 'x' );
     for (i = 0; i < 768; i++) CHECK( buffer[i] == (i & 0xff) );

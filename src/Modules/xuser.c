@@ -499,9 +499,15 @@ static HRESULT WINAPI x_user_XUserGetGamerPictureResultSize( IXUserImpl6 *iface,
 
 static HRESULT WINAPI x_user_XUserGetGamerPictureResult( IXUserImpl6 *iface, XAsyncBlock *async, SIZE_T bufferSize, void *buffer, SIZE_T *bufferUsed )
 {
+    SIZE_T required;
+    HRESULT hr;
+
     TRACE( "iface %p, async %p, bufferSize %Iu, buffer %p, bufferUsed %p.\n", iface, async, bufferSize, buffer, bufferUsed );
 
     if (!async || !buffer) return E_INVALIDARG;
+    /* XAsyncGetResult drops the result when the buffer is too small. */
+    if (FAILED(hr = IXThreadingImpl_XAsyncGetResultSize( x_threading_impl, async, &required ))) return hr;
+    if (bufferSize < required) return HRESULT_FROM_WIN32( ERROR_INSUFFICIENT_BUFFER );
     return IXThreadingImpl_XAsyncGetResult( x_threading_impl, async, x_user_XUserGetGamerPictureAsync, bufferSize, buffer, bufferUsed );
 }
 

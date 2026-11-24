@@ -97,6 +97,7 @@ struct ui_request
     LONG ref;                   /* the async call, the thread or callback working on it */
     LONG done;                  /* somebody has taken on completing the call */
     LONG listed;
+    ULONG_PTR id;               /* handle for the game; unlike the address it is never used again */
     enum ui_kind kind;
     XAsyncBlock *async;         /* the provider's block, valid until cleanup */
     XTaskQueueHandle queue;
@@ -121,6 +122,7 @@ struct ui_request
 };
 
 static struct list requests = LIST_INIT( requests );
+static ULONG_PTR next_id;
 static XGameUiUiCallbacks ui_callbacks;
 static BOOL prefer_system_ui;
 static CRITICAL_SECTION ui_cs;
@@ -170,6 +172,14 @@ static BOOL ui_set_text( struct ui_request *request, unsigned int index, const c
 {
     if (!text) return TRUE;
     return (request->text[index] = strdup( text )) != NULL;
+}
+
+/* Cuts UTF-8 to at most `max` bytes, never within a character. Games have room for just that. */
+static void ui_limit_text( char *text, UINT32 max )
+{
+    if (!max || strlen( text ) <= max) return;
+    while (max && ((BYTE)text[max] & 0xc0) == 0x80) max--;
+    text[max] = 0;
 }
 
 static BOOL ui_set_user( struct ui_request *request, XUserHandle user )
@@ -495,7 +505,11 @@ static HRESULT ui_show( struct ui_request *request )
             {
                 size = WideCharToMultiByte( CP_UTF8, 0, dialog.entered, -1, NULL, 0, NULL, NULL );
                 if (!(request->result_text = malloc( size ))) hr = E_OUTOFMEMORY;
-                else WideCharToMultiByte( CP_UTF8, 0, dialog.entered, -1, request->result_text, size, NULL, NULL );
+                else
+                {
+                    WideCharToMultiByte( CP_UTF8, 0, dialog.entered, -1, request->result_text, size, NULL, NULL );
+                    ui_limit_text( request->result_text, request->max_length );
+                }
             }
         }
     }
@@ -508,6 +522,8 @@ static HRESULT ui_show( struct ui_request *request )
     return hr;
 }
 
+static HMODULE ui_module;
+
 static DWORD WINAPI ui_thread( void *arg )
 {
     struct ui_request *request = arg;
@@ -515,6 +531,8 @@ static DWORD WINAPI ui_thread( void *arg )
 
     if (ui_claim( request )) ui_complete( request, hr );
     ui_release( request );
+    /* Started with a reference on this library, a game may unload it before the window is gone. */
+    FreeLibraryAndExitThread( ui_module, 0 );
     return 0;
 }
 
@@ -537,7 +555,7 @@ static BOOL ui_has_callback( const struct ui_request *request )
 static void __stdcall ui_callback( void *context, BOOLEAN canceled )
 {
     struct ui_request *request = context;
-    XGameUiCallbackHandle handle = (XGameUiCallbackHandle)request;
+    XGameUiCallbackHandle handle = (XGameUiCallbackHandle)request->id;
     XGameUiUiCallbacks *c = &request->callbacks;
 
     if (canceled)
@@ -628,14 +646,21 @@ static HRESULT ui_begin( XAsyncBlock *async, struct ui_request *request, BOOL sy
         EnterCriticalSection( &ui_cs );
         if (!request->done)
         {
+            request->id = ++next_id;
             list_add_tail( &requests, &request->entry );
             request->listed = TRUE;
         }
         LeaveCriticalSection( &ui_cs );
         hr = IXThreadingImpl_XTaskQueueSubmitCallback( x_threading_impl, request->queue, XTaskQueuePort_Completion, request, ui_callback );
     }
+    else if (!GetModuleHandleExW( GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, (const WCHAR *)ui_thread, &ui_module ))
+        hr = HRESULT_FROM_WIN32( GetLastError() );
     else if ((thread = CreateThread( NULL, 0, ui_thread, request, 0, NULL ))) CloseHandle( thread );
-    else hr = HRESULT_FROM_WIN32( GetLastError() );
+    else
+    {
+        hr = HRESULT_FROM_WIN32( GetLastError() );
+        FreeLibrary( ui_module );
+    }
 
     if (FAILED(hr))
     {
@@ -646,6 +671,17 @@ static HRESULT ui_begin( XAsyncBlock *async, struct ui_request *request, BOOL sy
     return S_OK;
 }
 
+/* XAsyncGetResult drops the result when the buffer is too small, so a game could not ask again. */
+static HRESULT ui_sized_result( XAsyncBlock *async, const void *identity, SIZE_T size, void *buffer, SIZE_T *used )
+{
+    SIZE_T required;
+    HRESULT hr;
+
+    if (FAILED(hr = IXThreadingImpl_XAsyncGetResultSize( x_threading_impl, async, &required ))) return hr;
+    if (size < required) return HRESULT_FROM_WIN32( ERROR_INSUFFICIENT_BUFFER );
+    return IXThreadingImpl_XAsyncGetResult( x_threading_impl, async, identity, size, buffer, used );
+}
+
 /* The request a game answers, claimed and with a reference, NULL when it is not waiting. */
 static struct ui_request *ui_take( XGameUiCallbackHandle handle, enum ui_kind kind )
 {
@@ -654,7 +690,7 @@ static struct ui_request *ui_take( XGameUiCallbackHandle handle, enum ui_kind ki
     EnterCriticalSection( &ui_cs );
     LIST_FOR_EACH_ENTRY( request, &requests, struct ui_request, entry )
     {
-        if (request != (struct ui_request *)handle || request->kind != kind) continue;
+        if (request->id != (ULONG_PTR)handle || request->kind != kind) continue;
         if (ui_claim( request ))
         {
             InterlockedIncrement( &request->ref );
@@ -835,7 +871,7 @@ static HRESULT WINAPI x_game_ui_XGameUiShowPlayerPickerResult( IXGameUiImpl4 *if
     HRESULT hr;
 
     if (!async || (resultPlayersCount && !resultPlayers)) return E_INVALIDARG;
-    hr = IXThreadingImpl_XAsyncGetResult( x_threading_impl, async, x_game_ui_XGameUiShowPlayerPickerAsync, resultPlayersCount * sizeof(UINT64), resultPlayers, &used );
+    hr = ui_sized_result( async, x_game_ui_XGameUiShowPlayerPickerAsync, resultPlayersCount * sizeof(UINT64), resultPlayers, &used );
     if (SUCCEEDED(hr) && resultPlayersUsed) *resultPlayersUsed = used / sizeof(UINT64);
     return hr;
 }
@@ -911,7 +947,7 @@ static HRESULT WINAPI x_game_ui_XGameUiShowTextEntryResult( IXGameUiImpl4 *iface
     HRESULT hr;
 
     if (!async || !resultTextBuffer) return E_INVALIDARG;
-    hr = IXThreadingImpl_XAsyncGetResult( x_threading_impl, async, x_game_ui_XGameUiShowTextEntryAsync, resultTextBufferSize, resultTextBuffer, &used );
+    hr = ui_sized_result( async, x_game_ui_XGameUiShowTextEntryAsync, resultTextBufferSize, resultTextBuffer, &used );
     if (SUCCEEDED(hr) && resultTextBufferUsed) *resultTextBufferUsed = used;
     return hr;
 }
@@ -1124,6 +1160,7 @@ static HRESULT WINAPI x_game_ui_XGameUiSetTextEntryUiResponse( IXGameUiImpl4 *if
         free( copy );
         return E_INVALIDARG;
     }
+    ui_limit_text( copy, request->max_length );
     request->result_text = copy;
     ui_complete( request, S_OK );
     ui_release( request );
