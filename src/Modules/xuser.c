@@ -408,22 +408,107 @@ static HRESULT WINAPI __PADDING__( IXUserImpl6 *iface )
     return E_NOTIMPL;
 }
 
+struct picture_request
+{
+    UINT32 pixels;
+    UINT64 xuid;
+    char *data;                 /* bridge answer, decoded in place */
+    SIZE_T size;
+};
+
+/* Decodes base64 in place and answers the size of the data, 0 when it is none. */
+static SIZE_T base64_decode( char *text )
+{
+    BYTE *start = (BYTE *)text, *out = start;
+    UINT32 bits = 0, count = 0, value;
+
+    for (; *text && *text != '='; text++)
+    {
+        if (*text >= 'A' && *text <= 'Z') value = *text - 'A';
+        else if (*text >= 'a' && *text <= 'z') value = *text - 'a' + 26;
+        else if (*text >= '0' && *text <= '9') value = *text - '0' + 52;
+        else if (*text == '+') value = 62;
+        else if (*text == '/') value = 63;
+        else return 0;
+        bits = (bits << 6) | value;
+        if ((count += 6) >= 8) *out++ = bits >> (count -= 8);
+    }
+    return out - start;
+}
+
+static HRESULT WINAPI picture_provider( XAsyncOp op, const XAsyncProviderData *data )
+{
+    struct picture_request *request = data->context;
+    char body[64];
+    HRESULT hr;
+
+    switch (op)
+    {
+        case XAsyncOp_Begin:
+            return IXThreadingImpl_XAsyncSchedule( x_threading_impl, data->async, 0 );
+
+        case XAsyncOp_DoWork:
+            sprintf( body, "%I64u\n%u", request->xuid, request->pixels );
+            if (SUCCEEDED(hr = gdkc_bridge_post( L"/xbox/gamer-picture", body, &request->data )) &&
+                !(request->size = base64_decode( request->data )))
+                hr = HRESULT_FROM_WIN32( ERROR_BAD_NET_RESP );
+            IXThreadingImpl_XAsyncComplete( x_threading_impl, data->async, hr, SUCCEEDED(hr) ? request->size : 0 );
+            return S_OK;
+
+        case XAsyncOp_GetResult:
+            if (data->bufferSize < request->size) return HRESULT_FROM_WIN32( ERROR_INSUFFICIENT_BUFFER );
+            memcpy( data->buffer, request->data, request->size );
+            return S_OK;
+
+        case XAsyncOp_Cleanup:
+            free( request->data );
+            free( request );
+            return S_OK;
+
+        default:
+            return S_OK;
+    }
+}
+
 static HRESULT WINAPI x_user_XUserGetGamerPictureAsync( IXUserImpl6 *iface, XUserHandle user, XUserGamerPictureSize pictureSize, XAsyncBlock *async )
 {
-    FIXME( "iface %p, user %p, pictureSize %d, async %p stub!\n", iface, user, pictureSize, async );
-    return E_NOTIMPL;
+    TRACE( "iface %p, user %p, pictureSize %d, async %p.\n", iface, user, pictureSize, async );
+
+    static const UINT32 pixels[] = { 64, 208, 424, 1080 };
+    struct picture_request *request;
+    HRESULT hr;
+
+    if (!user || !async || (UINT32)pictureSize >= ARRAY_SIZE(pixels)) return E_INVALIDARG;
+    /* Without Xodus there is nobody to ask. */
+    if (!gdkc_bridge_available()) return E_NOTIMPL;
+    if (!(request = calloc( 1, sizeof(*request) ))) return E_OUTOFMEMORY;
+    request->pixels = pixels[pictureSize];
+    request->xuid = user->xuid;
+    if (FAILED(hr = IXThreadingImpl_XAsyncBegin( x_threading_impl, async, request, x_user_XUserGetGamerPictureAsync, "XUserGetGamerPictureAsync", picture_provider )))
+        free( request );
+    return hr;
 }
 
 static HRESULT WINAPI x_user_XUserGetGamerPictureResultSize( IXUserImpl6 *iface, XAsyncBlock *async, SIZE_T *bufferSize )
 {
-    FIXME( "iface %p, async %p, bufferSize %p stub!\n", iface, async, bufferSize );
-    return E_NOTIMPL;
+    TRACE( "iface %p, async %p, bufferSize %p.\n", iface, async, bufferSize );
+
+    if (!async || !bufferSize) return E_INVALIDARG;
+    return IXThreadingImpl_XAsyncGetResultSize( x_threading_impl, async, bufferSize );
 }
 
 static HRESULT WINAPI x_user_XUserGetGamerPictureResult( IXUserImpl6 *iface, XAsyncBlock *async, SIZE_T bufferSize, void *buffer, SIZE_T *bufferUsed )
 {
-    FIXME( "iface %p, async %p, bufferSize %Iu, buffer %p, bufferUsed %p stub!\n", iface, async, bufferSize, buffer, bufferUsed );
-    return E_NOTIMPL;
+    SIZE_T required;
+    HRESULT hr;
+
+    TRACE( "iface %p, async %p, bufferSize %Iu, buffer %p, bufferUsed %p.\n", iface, async, bufferSize, buffer, bufferUsed );
+
+    if (!async || !buffer) return E_INVALIDARG;
+    /* XAsyncGetResult drops the result when the buffer is too small. */
+    if (FAILED(hr = IXThreadingImpl_XAsyncGetResultSize( x_threading_impl, async, &required ))) return hr;
+    if (bufferSize < required) return HRESULT_FROM_WIN32( ERROR_INSUFFICIENT_BUFFER );
+    return IXThreadingImpl_XAsyncGetResult( x_threading_impl, async, x_user_XUserGetGamerPictureAsync, bufferSize, buffer, bufferUsed );
 }
 
 static HRESULT WINAPI x_user_XUserGetAgeGroup( IXUserImpl6 *iface, XUserHandle user, XUserAgeGroup *ageGroup )
@@ -446,16 +531,38 @@ static HRESULT WINAPI x_user_XUserCheckPrivilege( IXUserImpl6 *iface, XUserHandl
     return S_OK;
 }
 
+/* Calls without any work: they succeed, or fail to resolve an issue when there is a context. */
+static HRESULT WINAPI nothing_provider( XAsyncOp op, const XAsyncProviderData *data )
+{
+    switch (op)
+    {
+        case XAsyncOp_Begin:
+            return IXThreadingImpl_XAsyncSchedule( x_threading_impl, data->async, 0 );
+
+        case XAsyncOp_DoWork:
+            IXThreadingImpl_XAsyncComplete( x_threading_impl, data->async, data->context ? E_GAMEUSER_FAILED_TO_RESOLVE : S_OK, 0 );
+            return S_OK;
+
+        default:
+            return S_OK;
+    }
+}
+
 static HRESULT WINAPI x_user_XUserResolvePrivilegeWithUiAsync( IXUserImpl6 *iface, XUserHandle user, XUserPrivilegeOptions options, XUserPrivilege privilege, XAsyncBlock *async )
 {
-    FIXME( "iface %p, user %p, options %d, privilege %d, async %p stub!\n", iface, user, options, privilege, async );
-    return E_NOTIMPL;
+    TRACE( "iface %p, user %p, options %d, privilege %d, async %p.\n", iface, user, options, privilege, async );
+
+    if (!user || !async) return E_INVALIDARG;
+    /* Every privilege is granted, see x_user_XUserCheckPrivilege. */
+    return IXThreadingImpl_XAsyncBegin( x_threading_impl, async, NULL, x_user_XUserResolvePrivilegeWithUiAsync, "XUserResolvePrivilegeWithUiAsync", nothing_provider );
 }
 
 static HRESULT WINAPI x_user_XUserResolvePrivilegeWithUiResult( IXUserImpl6 *iface, XAsyncBlock *async )
 {
-    FIXME( "iface %p, async %p stub!\n", iface, async );
-    return E_NOTIMPL;
+    TRACE( "iface %p, async %p.\n", iface, async );
+
+    if (!async) return E_INVALIDARG;
+    return IXThreadingImpl_XAsyncGetResult( x_threading_impl, async, x_user_XUserResolvePrivilegeWithUiAsync, 0, NULL, NULL );
 }
 
 static HRESULT begin_token_request( XUserHandle user, XUserGetTokenAndSignatureOptions options, const char *method, const char *url, SIZE_T bodySize, const void *bodyBuffer, XAsyncBlock *async, BOOL utf16, const void *identity )
@@ -570,26 +677,36 @@ static HRESULT WINAPI x_user_XUserGetTokenAndSignatureUtf16Result( IXUserImpl6 *
 
 static HRESULT WINAPI x_user_XUserResolveIssueWithUiAsync( IXUserImpl6 *iface, XUserHandle user, const char *url, XAsyncBlock *async )
 {
-    FIXME( "iface %p, user %p, url %s, async %p stub!\n", iface, user, debugstr_a( url ), async );
-    return E_NOTIMPL;
+    TRACE( "iface %p, user %p, url %s, async %p.\n", iface, user, debugstr_a( url ), async );
+
+    if (!user || !async) return E_INVALIDARG;
+    /* Sign-in issues are resolved in xTux (xtux-cli login), not from within the game. */
+    return IXThreadingImpl_XAsyncBegin( x_threading_impl, async, (void *)(ULONG_PTR)TRUE, x_user_XUserResolveIssueWithUiAsync, "XUserResolveIssueWithUiAsync", nothing_provider );
 }
 
 static HRESULT WINAPI x_user_XUserResolveIssueWithUiResult( IXUserImpl6 *iface, XAsyncBlock *async )
 {
-    FIXME( "iface %p, async %p stub!\n", iface, async );
-    return E_NOTIMPL;
+    TRACE( "iface %p, async %p.\n", iface, async );
+
+    if (!async) return E_INVALIDARG;
+    return IXThreadingImpl_XAsyncGetResult( x_threading_impl, async, x_user_XUserResolveIssueWithUiAsync, 0, NULL, NULL );
 }
 
 static HRESULT WINAPI x_user_XUserResolveIssueWithUiUtf16Async( IXUserImpl6 *iface, XUserHandle user, const WCHAR *url, XAsyncBlock *async )
 {
-    FIXME( "iface %p, user %p, url %s, async %p stub!\n", iface, user, debugstr_w( url ), async );
-    return E_NOTIMPL;
+    TRACE( "iface %p, user %p, url %s, async %p.\n", iface, user, debugstr_w( url ), async );
+
+    if (!user || !async) return E_INVALIDARG;
+    /* Sign-in issues are resolved in xTux (xtux-cli login), not from within the game. */
+    return IXThreadingImpl_XAsyncBegin( x_threading_impl, async, (void *)(ULONG_PTR)TRUE, x_user_XUserResolveIssueWithUiUtf16Async, "XUserResolveIssueWithUiUtf16Async", nothing_provider );
 }
 
 static HRESULT WINAPI x_user_XUserResolveIssueWithUiUtf16Result( IXUserImpl6 *iface, XAsyncBlock *async )
 {
-    FIXME( "iface %p, async %p stub!\n", iface, async );
-    return E_NOTIMPL;
+    TRACE( "iface %p, async %p.\n", iface, async );
+
+    if (!async) return E_INVALIDARG;
+    return IXThreadingImpl_XAsyncGetResult( x_threading_impl, async, x_user_XUserResolveIssueWithUiUtf16Async, 0, NULL, NULL );
 }
 
 static HRESULT WINAPI x_user_XUserRegisterForChangeEvent( IXUserImpl6 *iface, XTaskQueueHandle queue, void *context, XUserChangeEventCallback *callback, XTaskQueueRegistrationToken *token )
@@ -654,8 +771,9 @@ static HRESULT WINAPI x_user_XUserGetMsaTokenSilentlyResultSize( IXUserImpl6 *if
 
 static BOOLEAN WINAPI x_user_XUserIsStoreUser( IXUserImpl6 *iface, XUserHandle user )
 {
-    FIXME( "iface %p, user %p stub!\n", iface, user );
-    return TRUE;
+    TRACE( "iface %p, user %p.\n", iface, user );
+
+    return user && user == get_local_user();
 }
 
 static HRESULT WINAPI x_user_XUserPlatformRemoteConnectSetEventHandlers( IXUserImpl6 *iface, XTaskQueueHandle queue, XUserPlatformRemoteConnectEventHandlers *handlers )
@@ -853,20 +971,37 @@ static ULONG WINAPI x_user_device_Release( IXUserDeviceImpl2 *iface )
 
 static HRESULT WINAPI x_user_device_XUserFindForDevice( IXUserDeviceImpl2 *iface, const APP_LOCAL_DEVICE_ID *deviceId, XUserHandle *handle )
 {
-    FIXME( "iface %p, deviceId %p, handle %p stub!\n", iface, deviceId, handle );
-    return E_NOTIMPL;
+    TRACE( "iface %p, deviceId %p, handle %p.\n", iface, deviceId, handle );
+
+    struct XUser *user = get_local_user();
+
+    if (!deviceId || !handle) return E_INVALIDARG;
+    /* There is one user, all devices are theirs. */
+    if (!user) return E_GAMEUSER_USER_NOT_FOUND;
+    InterlockedIncrement( &user->ref );
+    *handle = user;
+    return S_OK;
 }
 
 static HRESULT WINAPI x_user_device_XUserRegisterForDeviceAssociationChanged( IXUserDeviceImpl2 *iface, XTaskQueueHandle queue, void *context, XUserDeviceAssociationChangedCallback *callback, XTaskQueueRegistrationToken *token )
 {
-    FIXME( "iface %p, queue %p, context %p, callback %p, token %p stub!\n", iface, queue, context, callback, token );
-    return E_NOTIMPL;
+    /* Generated by tools/gdkgen.py (never-fires), see tools/gdkgen/events.toml. */
+    static LONG64 next_token;
+
+    TRACE( "iface %p, queue %p, context %p, callback %p, token %p.\n", iface, queue, context, callback, token );
+
+    if (!callback || !token) return E_INVALIDARG;
+    /* Every device belongs to the one signed in user under xTux, so an association never changes
+     * and the callback is never invoked. */
+    token->token = InterlockedIncrement64( &next_token );
+    return S_OK;
 }
 
 static BOOLEAN WINAPI x_user_device_XUserUnregisterForDeviceAssociationChanged( IXUserDeviceImpl2 *iface, XTaskQueueRegistrationToken token, BOOLEAN wait )
 {
-    FIXME( "iface %p, token %p, wait %d stub!\n", iface, &token, wait );
-    return FALSE;
+    /* Generated by tools/gdkgen.py (never-fires), see tools/gdkgen/events.toml. */
+    TRACE( "iface %p, token %I64u, wait %d.\n", iface, token.token, wait );
+    return TRUE;
 }
 
 static HRESULT WINAPI x_user_device_XUserGetDefaultAudioEndpointUtf16( IXUserDeviceImpl2 *iface, XUserLocalId user, XUserDefaultAudioEndpointKind defaultAudioEndpointKind, SIZE_T endpointIdUtf16Count, WCHAR *endpointIdUtf16, SIZE_T *endpointIdUtf16Used )
@@ -877,14 +1012,23 @@ static HRESULT WINAPI x_user_device_XUserGetDefaultAudioEndpointUtf16( IXUserDev
 
 static HRESULT WINAPI x_user_device_XUserRegisterForDefaultAudioEndpointUtf16Changed( IXUserDeviceImpl2 *iface, XTaskQueueHandle queue, void *context, XUserDefaultAudioEndpointUtf16ChangedCallback *callback, XTaskQueueRegistrationToken *token )
 {
-    FIXME( "iface %p, queue %p, context %p, callback %p, token %p stub!\n", iface, queue, context, callback, token );
-    return E_NOTIMPL;
+    /* Generated by tools/gdkgen.py (never-fires), see tools/gdkgen/events.toml. */
+    static LONG64 next_token;
+
+    TRACE( "iface %p, queue %p, context %p, callback %p, token %p.\n", iface, queue, context, callback, token );
+
+    if (!callback || !token) return E_INVALIDARG;
+    /* Users have no audio endpoints of their own under xTux, so none ever changes and the callback
+     * is never invoked. */
+    token->token = InterlockedIncrement64( &next_token );
+    return S_OK;
 }
 
 static BOOLEAN WINAPI x_user_device_XUserUnregisterForDefaultAudioEndpointUtf16Changed( IXUserDeviceImpl2 *iface, XTaskQueueRegistrationToken token, BOOLEAN wait )
 {
-    FIXME( "iface %p, token %p, wait %d stub!\n", iface, &token, wait );
-    return FALSE;
+    /* Generated by tools/gdkgen.py (never-fires), see tools/gdkgen/events.toml. */
+    TRACE( "iface %p, token %I64u, wait %d.\n", iface, token.token, wait );
+    return TRUE;
 }
 
 static HRESULT WINAPI x_user_device_XUserFindControllerForUserWithUiAsync( IXUserDeviceImpl2 *iface, XUserHandle user, XAsyncBlock *async )
