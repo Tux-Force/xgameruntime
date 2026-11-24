@@ -25,6 +25,7 @@ struct x_accessibility
 {
     IXAccessibilityImpl2 IXAccessibilityImpl2_iface;
     LONG ref;
+    LONG captions_enabled;
 };
 
 WINE_DEFAULT_DEBUG_CHANNEL(gdkc);
@@ -71,26 +72,61 @@ static ULONG WINAPI x_accessibility_Release( IXAccessibilityImpl2 *iface )
 
 static HRESULT WINAPI x_accessibility_XClosedCaptionGetProperties( IXAccessibilityImpl2 *iface, XClosedCaptionProperties *properties )
 {
-    FIXME( "iface %p, properties %p stub!\n", iface, properties );
-    return E_NOTIMPL;
+    struct x_accessibility *impl = impl_from_IXAccessibilityImpl2( iface );
+
+    TRACE( "iface %p, properties %p.\n", iface, properties );
+
+    if (!properties) return E_INVALIDARG;
+
+    /* White on black text in a transparent window, in the default font. */
+    memset( properties, 0, sizeof(*properties) );
+    properties->BackgroundColor.A = 0xff;
+    properties->FontColor.Value = 0xffffffff;
+    properties->FontEdgeAttribute = XClosedCaptionFontEdgeAttribute_Default;
+    properties->FontStyle = XClosedCaptionFontStyle_Default;
+    properties->FontScale = 1.0f;
+    properties->Enabled = !!InterlockedCompareExchange( &impl->captions_enabled, 0, 0 );
+    return S_OK;
 }
 
 static HRESULT WINAPI x_accessibility_XClosedCaptionSetEnabled( IXAccessibilityImpl2 *iface, BOOLEAN enabled )
 {
-    FIXME( "iface %p, enabled %d stub!\n", iface, enabled );
-    return E_NOTIMPL;
+    struct x_accessibility *impl = impl_from_IXAccessibilityImpl2( iface );
+
+    TRACE( "iface %p, enabled %d.\n", iface, enabled );
+
+    /* There is no system setting for this under Wine, so it lasts as long as the game runs. */
+    InterlockedExchange( &impl->captions_enabled, !!enabled );
+    return S_OK;
 }
 
 static HRESULT WINAPI x_accessibility_XHighContrastGetMode( IXAccessibilityImpl2 *iface, XHighContrastMode *mode )
 {
-    FIXME( "iface %p, mode %p stub!\n", iface, mode );
-    return E_NOTIMPL;
+    HIGHCONTRASTW contrast = { .cbSize = sizeof(contrast) };
+
+    TRACE( "iface %p, mode %p.\n", iface, mode );
+
+    if (!mode) return E_INVALIDARG;
+    if (!SystemParametersInfoW( SPI_GETHIGHCONTRAST, sizeof(contrast), &contrast, 0 ))
+        return HRESULT_FROM_WIN32( GetLastError() );
+
+    if (!(contrast.dwFlags & HCF_HIGHCONTRASTON)) *mode = XHighContrastMode_Off;
+    else switch (GetSysColor( COLOR_WINDOW ))
+    {
+        case RGB( 0, 0, 0 ):       *mode = XHighContrastMode_Dark;  break;
+        case RGB( 255, 255, 255 ): *mode = XHighContrastMode_Light; break;
+        default:                   *mode = XHighContrastMode_Other; break;
+    }
+    return S_OK;
 }
 
 static HRESULT WINAPI x_accessibility_XSpeechToTextSetPositionHint( IXAccessibilityImpl2 *iface, XSpeechToTextPositionHint position )
 {
-    FIXME( "iface %p, position %d stub!\n", iface, position );
-    return E_NOTIMPL;
+    TRACE( "iface %p, position %d.\n", iface, position );
+
+    if ((UINT32)position > XSpeechToTextPositionHint_TopRight) return E_INVALIDARG;
+    /* Only a hint, and there is no speech to text overlay to place. */
+    return S_OK;
 }
 
 static HRESULT WINAPI x_accessibility_XSpeechToTextSendString( IXAccessibilityImpl2 *iface, const char *speakerName, const char *content, XSpeechToTextType type )
@@ -101,8 +137,11 @@ static HRESULT WINAPI x_accessibility_XSpeechToTextSendString( IXAccessibilityIm
 
 static HRESULT WINAPI x_accessibility_XSpeechSynthesizerEnumerateInstalledVoices( IXAccessibilityImpl2 *iface, void *context, XSpeechSynthesizerInstalledVoicesCallback *callback )
 {
-    FIXME( "iface %p, context %p, callback %p stub!\n", iface, context, callback );
-    return E_NOTIMPL;
+    TRACE( "iface %p, context %p, callback %p.\n", iface, context, callback );
+
+    if (!callback) return E_INVALIDARG;
+    /* No voices are installed, see x_accessibility_XSpeechSynthesizerCreate. */
+    return S_OK;
 }
 
 static HRESULT WINAPI x_accessibility_XSpeechSynthesizerCreate( IXAccessibilityImpl2 *iface, XSpeechSynthesizerHandle *speechSynthesizer )

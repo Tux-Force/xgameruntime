@@ -27,6 +27,13 @@ struct x_error
 {
     IXErrorImpl IXErrorImpl_iface;
     LONG ref;
+
+    /* Only recorded so far: our modules return their errors without reporting them here. */
+    SRWLOCK lock;
+    XErrorCallback *callback;
+    void *context;
+    XErrorOptions options_debugger;
+    XErrorOptions options_no_debugger;
 };
 
 static inline struct x_error *impl_from_IXErrorImpl( IXErrorImpl *iface )
@@ -76,12 +83,26 @@ static HRESULT WINAPI __PADDING__( IXErrorImpl *iface )
 
 static void WINAPI x_error_XErrorSetCallback( IXErrorImpl *iface, XErrorCallback *callback, void *context )
 {
-    FIXME( "iface %p, callback %p, context %p stub!\n", iface, callback, context );
+    struct x_error *impl = impl_from_IXErrorImpl( iface );
+
+    TRACE( "iface %p, callback %p, context %p.\n", iface, callback, context );
+
+    AcquireSRWLockExclusive( &impl->lock );
+    impl->callback = callback;
+    impl->context = context;
+    ReleaseSRWLockExclusive( &impl->lock );
 }
 
 static void WINAPI x_error_XErrorSetOptions( IXErrorImpl *iface, XErrorOptions optionsDebuggerPresent, XErrorOptions optionsDebuggerNotPresent )
 {
-    FIXME( "iface %p, optionsDebuggerPresent %#x, optionsDebuggerNotPresent %#x stub!\n", iface, optionsDebuggerPresent, optionsDebuggerNotPresent );
+    struct x_error *impl = impl_from_IXErrorImpl( iface );
+
+    TRACE( "iface %p, optionsDebuggerPresent %#x, optionsDebuggerNotPresent %#x.\n", iface, optionsDebuggerPresent, optionsDebuggerNotPresent );
+
+    AcquireSRWLockExclusive( &impl->lock );
+    impl->options_debugger = optionsDebuggerPresent;
+    impl->options_no_debugger = optionsDebuggerNotPresent;
+    ReleaseSRWLockExclusive( &impl->lock );
 }
 
 static const struct IXErrorImplVtbl x_error_vtbl =

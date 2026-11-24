@@ -137,6 +137,63 @@ int main( void )
         }
     }
 
+    /* Features a PC title can ask for but that do not exist here. */
+    {
+        IXGameStreamingImpl *streaming = NULL;
+        IXAccessibilityImpl *accessibility = NULL;
+        IXLauncherImpl *launcher = NULL;
+        XDisplayTimeoutDeferralHandle first = NULL, second = NULL;
+        XClosedCaptionProperties captions;
+
+        hr = query( &CLSID_XGameStreamingImpl, &IID_IXGameStreamingImpl, (void **)&streaming );
+        CHECK( hr == S_OK && streaming, "XGameStreaming, hr %#lx\n", hr );
+        if (streaming)
+        {
+            hr = IXGameStreamingImpl_XGameStreamingInitialize( streaming );
+            CHECK( hr == S_OK, "XGameStreamingInitialize, hr %#lx\n", hr );
+            CHECK( !IXGameStreamingImpl_XGameStreamingIsStreaming( streaming ), "no streaming\n" );
+            CHECK( !IXGameStreamingImpl_XGameStreamingGetClientCount( streaming ), "no streaming clients\n" );
+            IXGameStreamingImpl_XGameStreamingUninitialize( streaming );
+        }
+
+        hr = query( &CLSID_XAccessibilityImpl, &IID_IXAccessibilityImpl, (void **)&accessibility );
+        CHECK( hr == S_OK && accessibility, "XAccessibility, hr %#lx\n", hr );
+        if (accessibility)
+        {
+            hr = IXAccessibilityImpl_XClosedCaptionSetEnabled( accessibility, TRUE );
+            CHECK( hr == S_OK, "XClosedCaptionSetEnabled, hr %#lx\n", hr );
+            hr = IXAccessibilityImpl_XClosedCaptionGetProperties( accessibility, &captions );
+            CHECK( hr == S_OK && captions.Enabled && captions.FontScale == 1.0f, "XClosedCaptionGetProperties, hr %#lx\n", hr );
+        }
+
+        hr = query( &CLSID_XLauncherImpl, &IID_IXLauncherImpl, (void **)&launcher );
+        CHECK( hr == S_OK && launcher, "XLauncher, hr %#lx\n", hr );
+        if (launcher)
+        {
+            static const char *const refused[] = { "file:///c:/windows/notepad.exe", "cmd:x", "C:\\windows\\notepad.exe", "ms-xbl-x:y" };
+            static const char *const invalid[] = { "notepad.exe", "http:", "https://example.com/ /x", "https://example.com/\"x" };
+            unsigned int i;
+
+            for (i = 0; i < ARRAYSIZE(refused); i++)
+            {
+                hr = IXLauncherImpl_XLaunchUri( launcher, NULL, refused[i] );
+                CHECK( hr == E_ACCESSDENIED, "XLaunchUri refuses %s, hr %#lx\n", refused[i], hr );
+            }
+            for (i = 0; i < ARRAYSIZE(invalid); i++)
+            {
+                hr = IXLauncherImpl_XLaunchUri( launcher, NULL, invalid[i] );
+                CHECK( hr == E_INVALIDARG, "XLaunchUri %s, hr %#lx\n", invalid[i], hr );
+            }
+            hr = IXLauncherImpl_XDisplayAcquireTimeoutDeferral( launcher, &first );
+            CHECK( hr == S_OK && first, "XDisplayAcquireTimeoutDeferral, hr %#lx\n", hr );
+            hr = IXLauncherImpl_XDisplayAcquireTimeoutDeferral( launcher, &second );
+            CHECK( hr == S_OK && second && second != first, "second XDisplayAcquireTimeoutDeferral, hr %#lx\n", hr );
+            IXLauncherImpl_XDisplayCloseTimeoutDeferralHandle( launcher, first );
+            IXLauncherImpl_XDisplayCloseTimeoutDeferralHandle( launcher, second );
+            IXLauncherImpl_XDisplayCloseTimeoutDeferralHandle( launcher, NULL );
+        }
+    }
+
     /* An unknown class stays unknown. */
     hr = query( &IID_IUnknown, &IID_IUnknown, (void **)&unk );
     CHECK( hr == REGDB_E_CLASSNOTREG, "unknown class, hr %#lx\n", hr );
