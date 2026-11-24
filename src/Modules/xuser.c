@@ -525,16 +525,38 @@ static HRESULT WINAPI x_user_XUserCheckPrivilege( IXUserImpl6 *iface, XUserHandl
     return S_OK;
 }
 
+/* Calls without any work: they succeed, or fail to resolve an issue when there is a context. */
+static HRESULT WINAPI nothing_provider( XAsyncOp op, const XAsyncProviderData *data )
+{
+    switch (op)
+    {
+        case XAsyncOp_Begin:
+            return IXThreadingImpl_XAsyncSchedule( x_threading_impl, data->async, 0 );
+
+        case XAsyncOp_DoWork:
+            IXThreadingImpl_XAsyncComplete( x_threading_impl, data->async, data->context ? E_GAMEUSER_FAILED_TO_RESOLVE : S_OK, 0 );
+            return S_OK;
+
+        default:
+            return S_OK;
+    }
+}
+
 static HRESULT WINAPI x_user_XUserResolvePrivilegeWithUiAsync( IXUserImpl6 *iface, XUserHandle user, XUserPrivilegeOptions options, XUserPrivilege privilege, XAsyncBlock *async )
 {
-    FIXME( "iface %p, user %p, options %d, privilege %d, async %p stub!\n", iface, user, options, privilege, async );
-    return E_NOTIMPL;
+    TRACE( "iface %p, user %p, options %d, privilege %d, async %p.\n", iface, user, options, privilege, async );
+
+    if (!user || !async) return E_INVALIDARG;
+    /* Every privilege is granted, see x_user_XUserCheckPrivilege. */
+    return IXThreadingImpl_XAsyncBegin( x_threading_impl, async, NULL, x_user_XUserResolvePrivilegeWithUiAsync, "XUserResolvePrivilegeWithUiAsync", nothing_provider );
 }
 
 static HRESULT WINAPI x_user_XUserResolvePrivilegeWithUiResult( IXUserImpl6 *iface, XAsyncBlock *async )
 {
-    FIXME( "iface %p, async %p stub!\n", iface, async );
-    return E_NOTIMPL;
+    TRACE( "iface %p, async %p.\n", iface, async );
+
+    if (!async) return E_INVALIDARG;
+    return IXThreadingImpl_XAsyncGetResult( x_threading_impl, async, x_user_XUserResolvePrivilegeWithUiAsync, 0, NULL, NULL );
 }
 
 static HRESULT begin_token_request( XUserHandle user, XUserGetTokenAndSignatureOptions options, const char *method, const char *url, SIZE_T bodySize, const void *bodyBuffer, XAsyncBlock *async, BOOL utf16, const void *identity )
@@ -649,26 +671,36 @@ static HRESULT WINAPI x_user_XUserGetTokenAndSignatureUtf16Result( IXUserImpl6 *
 
 static HRESULT WINAPI x_user_XUserResolveIssueWithUiAsync( IXUserImpl6 *iface, XUserHandle user, const char *url, XAsyncBlock *async )
 {
-    FIXME( "iface %p, user %p, url %s, async %p stub!\n", iface, user, debugstr_a( url ), async );
-    return E_NOTIMPL;
+    TRACE( "iface %p, user %p, url %s, async %p.\n", iface, user, debugstr_a( url ), async );
+
+    if (!user || !async) return E_INVALIDARG;
+    /* Sign-in issues are resolved in xTux (xtux-cli login), not from within the game. */
+    return IXThreadingImpl_XAsyncBegin( x_threading_impl, async, (void *)(ULONG_PTR)TRUE, x_user_XUserResolveIssueWithUiAsync, "XUserResolveIssueWithUiAsync", nothing_provider );
 }
 
 static HRESULT WINAPI x_user_XUserResolveIssueWithUiResult( IXUserImpl6 *iface, XAsyncBlock *async )
 {
-    FIXME( "iface %p, async %p stub!\n", iface, async );
-    return E_NOTIMPL;
+    TRACE( "iface %p, async %p.\n", iface, async );
+
+    if (!async) return E_INVALIDARG;
+    return IXThreadingImpl_XAsyncGetResult( x_threading_impl, async, x_user_XUserResolveIssueWithUiAsync, 0, NULL, NULL );
 }
 
 static HRESULT WINAPI x_user_XUserResolveIssueWithUiUtf16Async( IXUserImpl6 *iface, XUserHandle user, const WCHAR *url, XAsyncBlock *async )
 {
-    FIXME( "iface %p, user %p, url %s, async %p stub!\n", iface, user, debugstr_w( url ), async );
-    return E_NOTIMPL;
+    TRACE( "iface %p, user %p, url %s, async %p.\n", iface, user, debugstr_w( url ), async );
+
+    if (!user || !async) return E_INVALIDARG;
+    /* Sign-in issues are resolved in xTux (xtux-cli login), not from within the game. */
+    return IXThreadingImpl_XAsyncBegin( x_threading_impl, async, (void *)(ULONG_PTR)TRUE, x_user_XUserResolveIssueWithUiUtf16Async, "XUserResolveIssueWithUiUtf16Async", nothing_provider );
 }
 
 static HRESULT WINAPI x_user_XUserResolveIssueWithUiUtf16Result( IXUserImpl6 *iface, XAsyncBlock *async )
 {
-    FIXME( "iface %p, async %p stub!\n", iface, async );
-    return E_NOTIMPL;
+    TRACE( "iface %p, async %p.\n", iface, async );
+
+    if (!async) return E_INVALIDARG;
+    return IXThreadingImpl_XAsyncGetResult( x_threading_impl, async, x_user_XUserResolveIssueWithUiUtf16Async, 0, NULL, NULL );
 }
 
 static HRESULT WINAPI x_user_XUserRegisterForChangeEvent( IXUserImpl6 *iface, XTaskQueueHandle queue, void *context, XUserChangeEventCallback *callback, XTaskQueueRegistrationToken *token )
@@ -733,8 +765,9 @@ static HRESULT WINAPI x_user_XUserGetMsaTokenSilentlyResultSize( IXUserImpl6 *if
 
 static BOOLEAN WINAPI x_user_XUserIsStoreUser( IXUserImpl6 *iface, XUserHandle user )
 {
-    FIXME( "iface %p, user %p stub!\n", iface, user );
-    return TRUE;
+    TRACE( "iface %p, user %p.\n", iface, user );
+
+    return user && user == get_local_user();
 }
 
 static HRESULT WINAPI x_user_XUserPlatformRemoteConnectSetEventHandlers( IXUserImpl6 *iface, XTaskQueueHandle queue, XUserPlatformRemoteConnectEventHandlers *handlers )
@@ -932,20 +965,37 @@ static ULONG WINAPI x_user_device_Release( IXUserDeviceImpl2 *iface )
 
 static HRESULT WINAPI x_user_device_XUserFindForDevice( IXUserDeviceImpl2 *iface, const APP_LOCAL_DEVICE_ID *deviceId, XUserHandle *handle )
 {
-    FIXME( "iface %p, deviceId %p, handle %p stub!\n", iface, deviceId, handle );
-    return E_NOTIMPL;
+    TRACE( "iface %p, deviceId %p, handle %p.\n", iface, deviceId, handle );
+
+    struct XUser *user = get_local_user();
+
+    if (!deviceId || !handle) return E_INVALIDARG;
+    /* There is one user, all devices are theirs. */
+    if (!user) return E_GAMEUSER_USER_NOT_FOUND;
+    InterlockedIncrement( &user->ref );
+    *handle = user;
+    return S_OK;
 }
 
 static HRESULT WINAPI x_user_device_XUserRegisterForDeviceAssociationChanged( IXUserDeviceImpl2 *iface, XTaskQueueHandle queue, void *context, XUserDeviceAssociationChangedCallback *callback, XTaskQueueRegistrationToken *token )
 {
-    FIXME( "iface %p, queue %p, context %p, callback %p, token %p stub!\n", iface, queue, context, callback, token );
-    return E_NOTIMPL;
+    /* Generated by tools/gdkgen.py (never-fires), see tools/gdkgen/events.toml. */
+    static LONG64 next_token;
+
+    TRACE( "iface %p, queue %p, context %p, callback %p, token %p.\n", iface, queue, context, callback, token );
+
+    if (!callback || !token) return E_INVALIDARG;
+    /* Every device belongs to the one signed in user under xTux, so an association never changes
+     * and the callback is never invoked. */
+    token->token = InterlockedIncrement64( &next_token );
+    return S_OK;
 }
 
 static BOOLEAN WINAPI x_user_device_XUserUnregisterForDeviceAssociationChanged( IXUserDeviceImpl2 *iface, XTaskQueueRegistrationToken token, BOOLEAN wait )
 {
-    FIXME( "iface %p, token %p, wait %d stub!\n", iface, &token, wait );
-    return FALSE;
+    /* Generated by tools/gdkgen.py (never-fires), see tools/gdkgen/events.toml. */
+    TRACE( "iface %p, token %I64u, wait %d.\n", iface, token.token, wait );
+    return TRUE;
 }
 
 static HRESULT WINAPI x_user_device_XUserGetDefaultAudioEndpointUtf16( IXUserDeviceImpl2 *iface, XUserLocalId user, XUserDefaultAudioEndpointKind defaultAudioEndpointKind, SIZE_T endpointIdUtf16Count, WCHAR *endpointIdUtf16, SIZE_T *endpointIdUtf16Used )
@@ -956,14 +1006,23 @@ static HRESULT WINAPI x_user_device_XUserGetDefaultAudioEndpointUtf16( IXUserDev
 
 static HRESULT WINAPI x_user_device_XUserRegisterForDefaultAudioEndpointUtf16Changed( IXUserDeviceImpl2 *iface, XTaskQueueHandle queue, void *context, XUserDefaultAudioEndpointUtf16ChangedCallback *callback, XTaskQueueRegistrationToken *token )
 {
-    FIXME( "iface %p, queue %p, context %p, callback %p, token %p stub!\n", iface, queue, context, callback, token );
-    return E_NOTIMPL;
+    /* Generated by tools/gdkgen.py (never-fires), see tools/gdkgen/events.toml. */
+    static LONG64 next_token;
+
+    TRACE( "iface %p, queue %p, context %p, callback %p, token %p.\n", iface, queue, context, callback, token );
+
+    if (!callback || !token) return E_INVALIDARG;
+    /* Users have no audio endpoints of their own under xTux, so none ever changes and the callback
+     * is never invoked. */
+    token->token = InterlockedIncrement64( &next_token );
+    return S_OK;
 }
 
 static BOOLEAN WINAPI x_user_device_XUserUnregisterForDefaultAudioEndpointUtf16Changed( IXUserDeviceImpl2 *iface, XTaskQueueRegistrationToken token, BOOLEAN wait )
 {
-    FIXME( "iface %p, token %p, wait %d stub!\n", iface, &token, wait );
-    return FALSE;
+    /* Generated by tools/gdkgen.py (never-fires), see tools/gdkgen/events.toml. */
+    TRACE( "iface %p, token %I64u, wait %d.\n", iface, token.token, wait );
+    return TRUE;
 }
 
 static HRESULT WINAPI x_user_device_XUserFindControllerForUserWithUiAsync( IXUserDeviceImpl2 *iface, XUserHandle user, XAsyncBlock *async )

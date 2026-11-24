@@ -227,6 +227,24 @@ static int callbacks( XTaskQueueHandle queue, XUserHandle user )
     return 0;
 }
 
+static int resolve( IXUserImpl *users, XTaskQueueHandle queue, XUserHandle user )
+{
+    XAsyncBlock async = { .queue = queue };
+    BOOLEAN has = FALSE;
+
+    CHECK_HR( IXUserImpl_XUserCheckPrivilege( users, user, 0, 254, &has, NULL ), S_OK );
+    CHECK( has );
+    CHECK_HR( IXUserImpl_XUserResolvePrivilegeWithUiAsync( users, user, 0, 254, &async ), S_OK );
+    CHECK_HR( IXThreadingImpl_XAsyncGetStatus( threading, &async, TRUE ), S_OK );
+    CHECK_HR( IXUserImpl_XUserResolvePrivilegeWithUiResult( users, &async ), S_OK );
+    memset( &async, 0, sizeof(async) );
+    async.queue = queue;
+    CHECK_HR( IXUserImpl_XUserResolveIssueWithUiAsync( users, user, "https://example.test/", &async ), S_OK );
+    CHECK_HR( IXThreadingImpl_XAsyncGetStatus( threading, &async, TRUE ), 0x89245107 );
+    CHECK_HR( IXUserImpl_XUserResolveIssueWithUiResult( users, &async ), 0x89245107 );
+    return 0;
+}
+
 static int picture( IXUserImpl *users, XTaskQueueHandle queue, XUserHandle user )
 {
     XAsyncBlock async = { .queue = queue };
@@ -262,7 +280,7 @@ int main( void )
     CHECK_HR( IXThreadingImpl_XTaskQueueCreate( threading, XTaskQueueDispatchMode_ThreadPool, XTaskQueueDispatchMode_ThreadPool, &queue ), S_OK );
     called = CreateEventW( NULL, FALSE, FALSE, NULL );
 
-    if (picture( users, queue, user ) || dialogs( queue, user ) || callbacks( queue, user )) return 1;
+    if (resolve( users, queue, user ) || picture( users, queue, user ) || dialogs( queue, user ) || callbacks( queue, user )) return 1;
     printf( "ok\n" );
     return 0;
 }

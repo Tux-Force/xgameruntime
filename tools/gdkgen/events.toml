@@ -48,3 +48,13 @@ register = "XStoreRegisterPackageLicenseLost"
 unregister = "XStoreUnregisterPackageLicenseLost"
 require = ["storeLicenseHandle"]
 reason = "xTux checks the license before the game starts and does not revoke it while the game runs, so a package license is never lost during a run and the callback is never invoked."
+
+[[never_fires]]
+register = "XUserRegisterForDeviceAssociationChanged"
+unregister = "XUserUnregisterForDeviceAssociationChanged"
+reason = "Every device belongs to the one signed in user under xTux, so an association never changes and the callback is never invoked."
+
+[[never_fires]]
+register = "XUserRegisterForDefaultAudioEndpointUtf16Changed"
+unregister = "XUserUnregisterForDefaultAudioEndpointUtf16Changed"
+reason = "Users have no audio endpoints of their own under xTux, so none ever changes and the callback is never invoked."
